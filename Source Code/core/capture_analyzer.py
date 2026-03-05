@@ -93,10 +93,21 @@ class CaptureAnalysis:
     gratuitous_arps: int = 0
     arp_conflicts: List[Dict] = field(default_factory=list)
 
+    # STP stats
+    stp_count: int = 0
+    stp_topology_changes: int = 0
+
     # TCP stats
     tcp_packets: int = 0
     tcp_retransmissions: int = 0
     tcp_retransmission_pct: float = 0.0
+    # Per-node TCP breakdown: [(src_ip, dst_ip, retx_count, total_count, pct)]
+    tcp_retx_by_flow: List[Tuple[str, str, int, int, float]] = field(default_factory=list)
+    # Per-source IP retransmission count: [(ip, retx_count, pct_of_all_retx)]
+    tcp_retx_by_src: List[Tuple[str, int, float]] = field(default_factory=list)
+
+    # ARP per-host: [(ip, arp_request_count)]
+    arp_requests_by_src: List[Tuple[str, int]] = field(default_factory=list)
 
     # Timeline events
     timeline: List[TimelineEvent] = field(default_factory=list)
@@ -172,6 +183,12 @@ def analyze_capture(capture: CaptureResult) -> CaptureAnalysis:
     stp_count = 0
     stp_topology_changes = 0
 
+    # Per-flow TCP tracking: (src_ip, dst_ip) -> (total, retransmissions)
+    tcp_flow_total: Dict[Tuple[str, str], int] = defaultdict(int)
+    tcp_flow_retx: Dict[Tuple[str, str], int] = defaultdict(int)
+    # Per-source ARP request count
+    arp_requests_by_src: Counter = Counter()
+
     # Time-window tracking for burst detection
     BURST_WINDOW = 1.0  # 1-second windows
     broadcast_per_second = Counter()  # int(timestamp) -> count
@@ -218,6 +235,11 @@ def analyze_capture(capture: CaptureResult) -> CaptureAnalysis:
             arp_per_second[int(pkt.timestamp)] += 1
             if pkt.arp_opcode == 1:
                 arp_requests += 1
+                # Track which host is generating ARP requests
+                if pkt.arp_src_ip and pkt.arp_src_ip != "0.0.0.0":
+                    arp_requests_by_src[pkt.arp_src_ip] += 1
+                elif pkt.ip_src:
+                    arp_requests_by_src[pkt.ip_src] += 1
                 # Gratuitous ARP: sender asks for its own IP
                 if pkt.arp_src_ip == pkt.arp_dst_ip:
                     gratuitous_arps += 1
@@ -233,8 +255,12 @@ def analyze_capture(capture: CaptureResult) -> CaptureAnalysis:
         # TCP analysis
         if pkt.ip_proto == 6:  # TCP
             tcp_total += 1
-            if pkt.tcp_retransmission:
-                tcp_retransmissions += 1
+            if pkt.ip_src and pkt.ip_dst:
+                flow_key = (pkt.ip_src, pkt.ip_dst)
+                tcp_flow_total[flow_key] += 1
+                if pkt.tcp_retransmission:
+                    tcp_retransmissions += 1
+                    tcp_flow_retx[flow_key] += 1
 
         # STP detection
         if pkt.is_stp:
@@ -262,11 +288,34 @@ def analyze_capture(capture: CaptureResult) -> CaptureAnalysis:
     analysis.arp_requests = arp_requests
     analysis.arp_replies = arp_replies
     analysis.gratuitous_arps = gratuitous_arps
+    analysis.stp_count = stp_count
+    analysis.stp_topology_changes = stp_topology_changes
     analysis.tcp_packets = tcp_total
     analysis.tcp_retransmissions = tcp_retransmissions
     analysis.tcp_retransmission_pct = (
         (tcp_retransmissions / tcp_total * 100) if tcp_total > 0 else 0
     )
+
+    # Build per-flow retransmission table: top flows sorted by retx count
+    flow_rows = []
+    for (src, dst), retx in tcp_flow_retx.items():
+        total_flow = tcp_flow_total.get((src, dst), 1)
+        pct = (retx / total_flow * 100)
+        flow_rows.append((src, dst, retx, total_flow, pct))
+    flow_rows.sort(key=lambda r: r[2], reverse=True)
+    analysis.tcp_retx_by_flow = flow_rows[:20]
+
+    # Per-source IP retransmission rollup
+    src_retx: Counter = Counter()
+    for (src, _), retx in tcp_flow_retx.items():
+        src_retx[src] += retx
+    analysis.tcp_retx_by_src = [
+        (ip, cnt, (cnt / tcp_retransmissions * 100) if tcp_retransmissions > 0 else 0)
+        for ip, cnt in src_retx.most_common(10)
+    ]
+
+    # ARP per-source
+    analysis.arp_requests_by_src = arp_requests_by_src.most_common(10)
 
     # Top talkers — combine sent+received
     host_total_bytes = Counter()
@@ -582,11 +631,32 @@ def _analyze_tcp_retransmissions(analysis: CaptureAnalysis,
                                   tcp_total: int, tcp_retransmissions: int,
                                   packets: List[CapturedPacket],
                                   score: int) -> int:
-    """Analyze TCP retransmission rate."""
+    """Analyze TCP retransmission rate with per-node and per-flow breakdown."""
     if tcp_total == 0:
         return score
 
     retx_pct = (tcp_retransmissions / tcp_total * 100)
+
+    def _build_node_detail(analysis: CaptureAnalysis) -> str:
+        """Build a plain-English per-node breakdown of retransmissions."""
+        lines = []
+
+        # Top source IPs causing retransmissions
+        if analysis.tcp_retx_by_src:
+            lines.append("Top nodes generating retransmissions:")
+            for ip, cnt, pct in analysis.tcp_retx_by_src[:5]:
+                lines.append(f"  • {ip}  —  {cnt} retransmits ({pct:.0f}% of all retransmits)")
+
+        # Top flows (src → dst) by retransmission count
+        if analysis.tcp_retx_by_flow:
+            lines.append("")
+            lines.append("Worst affected connections (source → destination):")
+            for src, dst, retx, total, pct in analysis.tcp_retx_by_flow[:6]:
+                lines.append(f"  • {src} → {dst}  —  {retx}/{total} packets retransmitted ({pct:.0f}%)")
+
+        return "\n".join(lines) if lines else ""
+
+    node_detail = _build_node_detail(analysis)
 
     if retx_pct > 5:
         score -= 20
@@ -595,22 +665,31 @@ def _analyze_tcp_retransmissions(analysis: CaptureAnalysis,
             severity=Severity.CRITICAL,
             summary=f"{tcp_retransmissions:,} TCP retransmissions "
                     f"({retx_pct:.1f}% of TCP traffic) — significant packet loss.",
-            explanation="TCP retransmissions happen when sent data isn't acknowledged in time, "
-                        "forcing the sender to repeat it. A rate above 5% indicates serious "
-                        "and consistent packet loss on this network.\n\n"
-                        "Impact on industrial systems:\n"
-                        "• HMI screens update slowly or freeze\n"
-                        "• Program uploads/downloads fail or take forever\n"
-                        "• Explicit messaging (MSG instructions) time out\n"
-                        "• Web server pages on devices won't load\n\n"
-                        "While TCP retransmissions don't directly cause I/O faults (those "
-                        "use UDP), they indicate a network-level problem that is very likely "
-                        "also affecting the I/O traffic.",
-            recommendation="1. Check cables and connections — most retransmissions are caused "
-                           "by physical layer issues (bad cable, loose connector).\n"
-                           "2. Look at the CRC/collision data from device diagnostics.\n"
-                           "3. Check for bandwidth overload on the network segment.\n"
-                           "4. Verify switch port settings (speed/duplex) match on both ends.",
+            explanation=(
+                "TCP retransmissions happen when sent data isn't acknowledged in time, "
+                "forcing the sender to repeat it. A rate above 5% indicates serious "
+                "and consistent packet loss on this network.\n\n"
+                "Impact on industrial systems:\n"
+                "• HMI screens update slowly or freeze\n"
+                "• Program uploads/downloads fail or take forever\n"
+                "• Explicit messaging (MSG instructions) time out\n"
+                "• Web server pages on devices won't load\n\n"
+                "While TCP retransmissions don't directly cause I/O faults (those "
+                "use UDP), they indicate a network-level problem that is very likely "
+                "also affecting the I/O traffic.\n\n"
+                + (node_detail if node_detail else "")
+            ),
+            recommendation=(
+                "Nodes identified above are the starting point — focus physical inspection there first.\n\n"
+                "1. Check the cable and port for each high-retransmission source listed above.\n"
+                "2. Log into the switch and check error counters (CRC, input errors, collisions) "
+                "on the port connected to the worst offender.\n"
+                "3. Look for duplex mismatch — a device set to half-duplex on a full-duplex port "
+                "is the most common hidden cause of retransmissions.\n"
+                "4. If a specific src→dst flow dominates, the problem is likely on the link "
+                "between those two devices, not the whole segment.\n"
+                "5. Verify switch port speed/duplex settings match on both ends for the flagged IPs."
+            ),
             raw_value=f"Retransmissions: {tcp_retransmissions}/{tcp_total} ({retx_pct:.1f}%)",
             category="TCP/IP Health",
         ))
@@ -621,13 +700,20 @@ def _analyze_tcp_retransmissions(analysis: CaptureAnalysis,
             severity=Severity.WARNING,
             summary=f"{tcp_retransmissions:,} TCP retransmissions "
                     f"({retx_pct:.1f}% of TCP traffic) — moderate packet loss.",
-            explanation="Some TCP retransmissions are occurring. While a rate of 1-5% "
-                        "won't cripple the network, it does indicate packets are being "
-                        "lost and retransmitted, which slows down all TCP-based communication "
-                        "(HMI updates, web access, program transfers, explicit messaging).",
-            recommendation="1. Check physical connections — cables, connectors, patch panels.\n"
-                           "2. Verify no duplex mismatches exist.\n"
-                           "3. Run device diagnostics to check for CRC errors on specific ports.",
+            explanation=(
+                "Some TCP retransmissions are occurring. While a rate of 1–5% "
+                "won't cripple the network, it does indicate packets are being "
+                "lost and retransmitted, which slows down all TCP-based communication "
+                "(HMI updates, web access, program transfers, explicit messaging).\n\n"
+                + (node_detail if node_detail else "")
+            ),
+            recommendation=(
+                "Start with the nodes listed above — they are generating the most retransmits.\n\n"
+                "1. Check physical connections at each flagged source IP "
+                "(cable, SFP, patch panel connection).\n"
+                "2. Check switch port error counters for the flagged devices.\n"
+                "3. Verify no duplex mismatches exist on those ports."
+            ),
             raw_value=f"Retransmissions: {tcp_retransmissions}/{tcp_total} ({retx_pct:.1f}%)",
             category="TCP/IP Health",
         ))

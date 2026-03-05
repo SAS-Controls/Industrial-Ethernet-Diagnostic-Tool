@@ -5,6 +5,7 @@ Collects time-series trend data for charting and analytics.
 """
 
 import logging
+import math
 import socket
 import struct
 import subprocess
@@ -67,6 +68,16 @@ class DevicePollResult:
 
 
 @dataclass
+class DeviceStatusEvent:
+    """A device coming online or going offline during a monitoring session."""
+    timestamp: datetime
+    ip: str
+    label: str
+    came_online: bool
+    ping_ms: float = 0.0
+
+
+@dataclass
 class DeviceAnalytics:
     """Accumulated analytics for a single device over the monitoring session."""
     ip: str
@@ -80,6 +91,7 @@ class DeviceAnalytics:
     ping_max_ms: float = 0.0
     ping_avg_ms: float = 0.0
     ping_total_ms: float = 0.0
+    ping_jitter_ms: float = 0.0          # Standard deviation of ping times
     cip_min_ms: float = 0.0
     cip_max_ms: float = 0.0
     cip_avg_ms: float = 0.0
@@ -92,6 +104,8 @@ class DeviceAnalytics:
     # Outage tracking internals
     _in_outage: bool = False
     _outage_start: float = 0.0
+    # Welford online variance for jitter
+    _ping_M2: float = 0.0
 
     @property
     def uptime_pct(self) -> float:
@@ -154,11 +168,13 @@ class MultiDeviceMonitor:
         self._samples: List[MultiPollSample] = []
         self._trend_data: List[TrendPoint] = []
         self._analytics: Dict[str, DeviceAnalytics] = {}
+        self._status_events: List[DeviceStatusEvent] = []
 
         # Callbacks
         self._on_sample: Optional[Callable[[MultiPollSample], None]] = None
         self._on_status: Optional[Callable[[str], None]] = None
         self._on_error: Optional[Callable[[str], None]] = None
+        self._on_device_status: Optional[Callable[[DeviceStatusEvent], None]] = None
 
     # ── Configuration ────────────────────────────────────────────────────────
 
@@ -184,6 +200,10 @@ class MultiDeviceMonitor:
 
     def set_on_error(self, cb: Callable[[str], None]):
         self._on_error = cb
+
+    def set_on_device_status(self, cb: Callable[["DeviceStatusEvent"], None]):
+        """Callback fired when any device transitions online or offline."""
+        self._on_device_status = cb
 
     # ── Properties ───────────────────────────────────────────────────────────
 
@@ -260,6 +280,7 @@ class MultiDeviceMonitor:
             self._samples = []
             self._trend_data = []
             self._analytics = {}
+            self._status_events = []
             self._start_time = None
 
     # ── Poll Loop ────────────────────────────────────────────────────────────
@@ -379,6 +400,17 @@ class MultiDeviceMonitor:
             if ms > a.ping_max_ms:
                 a.ping_max_ms = ms
             a.ping_avg_ms = a.ping_total_ms / a.ping_success_count
+
+            # Welford online algorithm for standard deviation (jitter)
+            n = a.ping_success_count
+            delta = ms - (a.ping_avg_ms if n > 1 else ms)
+            # Use previous avg before update
+            prev_avg = (a.ping_total_ms - ms) / (n - 1) if n > 1 else ms
+            delta = ms - prev_avg
+            delta2 = ms - a.ping_avg_ms
+            a._ping_M2 += delta * delta2
+            if n >= 2:
+                a.ping_jitter_ms = math.sqrt(a._ping_M2 / (n - 1))
         else:
             a.ping_fail_count += 1
 
@@ -399,8 +431,9 @@ class MultiDeviceMonitor:
         else:
             a.cip_fail_count += 1
 
-        # Outage tracking
+        # Outage tracking + status change events
         reachable = result.is_reachable
+        prev_status = a.last_status
         a.last_status = "online" if reachable else "offline"
 
         now = time.time()
@@ -409,12 +442,41 @@ class MultiDeviceMonitor:
                 a._in_outage = True
                 a._outage_start = now
                 a.outage_count += 1
+                # Fire status change event
+                target = next((t for t in self._targets if t.ip == ip), None)
+                evt = DeviceStatusEvent(
+                    timestamp=datetime.now(),
+                    ip=ip,
+                    label=target.display_name if target else ip,
+                    came_online=False,
+                )
+                self._status_events.append(evt)
+                if self._on_device_status:
+                    try:
+                        self._on_device_status(evt)
+                    except Exception:
+                        pass
         else:
             if a._in_outage:
                 outage_dur = now - a._outage_start
                 if outage_dur > a.longest_outage_sec:
                     a.longest_outage_sec = outage_dur
                 a._in_outage = False
+                # Fire status change event (came back online)
+                target = next((t for t in self._targets if t.ip == ip), None)
+                evt = DeviceStatusEvent(
+                    timestamp=datetime.now(),
+                    ip=ip,
+                    label=target.display_name if target else ip,
+                    came_online=True,
+                    ping_ms=result.ping_time_ms if result.ping_success else 0.0,
+                )
+                self._status_events.append(evt)
+                if self._on_device_status:
+                    try:
+                        self._on_device_status(evt)
+                    except Exception:
+                        pass
 
     # ── Data Access ──────────────────────────────────────────────────────────
 
@@ -436,6 +498,11 @@ class MultiDeviceMonitor:
     def get_analytics(self) -> Dict[str, DeviceAnalytics]:
         """Return analytics for all devices."""
         return dict(self._analytics)
+
+    def get_status_events(self) -> List[DeviceStatusEvent]:
+        """Return list of device online/offline transition events."""
+        with self._lock:
+            return list(self._status_events)
 
     def get_samples_snapshot(self) -> List[MultiPollSample]:
         with self._lock:

@@ -21,6 +21,9 @@ Sources: IEEE OUI registry via maclookup.app, verified Feb 2026.
 MAC_VENDOR_DB: dict[str, tuple[str, str]] = {
 
     # ═══════════════════════════════════════════════════════════════════════════
+    # YASKAWA ELECTRIC CORPORATION
+    "00:20:B5": ("Yaskawa Electric", "automation"),    # IEEE: Yaskawa Electric Corporation (GA800, A1000, V1000 drives)
+
     # ROCKWELL AUTOMATION / ALLEN-BRADLEY  (13 registered OUIs)
     # ═══════════════════════════════════════════════════════════════════════════
     "00:00:BC": ("Allen-Bradley (Rockwell)", "automation"),
@@ -154,7 +157,7 @@ MAC_VENDOR_DB: dict[str, tuple[str, str]] = {
     # ═══════════════════════════════════════════════════════════════════════════
     # YASKAWA / MOTOMAN
     # ═══════════════════════════════════════════════════════════════════════════
-    "00:05:A6": ("Yaskawa Electric", "automation"),
+    "00:05:A6": ("Extron Electronics", "other"),      # IEEE: Extron Electronics
 
     # ═══════════════════════════════════════════════════════════════════════════
     # KEYENCE
@@ -197,7 +200,8 @@ MAC_VENDOR_DB: dict[str, tuple[str, str]] = {
     # ═══════════════════════════════════════════════════════════════════════════
     # BANNER ENGINEERING
     # ═══════════════════════════════════════════════════════════════════════════
-    "00:14:DC": ("Banner Engineering", "automation"),
+    "00:14:DC": ("CSDM", "other"),                     # IEEE: Communication System Design & Manufacturing
+    "00:23:D9": ("Banner Engineering", "automation"),   # IEEE: Banner Engineering (sensors, vision systems)
 
     # ═══════════════════════════════════════════════════════════════════════════
     # RED LION / SIXNET

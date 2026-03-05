@@ -237,14 +237,14 @@ class DeviceMonitorView(ctk.CTkFrame):
         # Create stat cards
         self._stat_cards = {}
         cards = [
-            ("status", "Status", "Idle", TEXT_MUTED),
-            ("uptime", "Uptime", "—", TEXT_MUTED),
-            ("samples", "Samples", "0", TEXT_MUTED),
-            ("ping_loss", "Ping Loss", "—", TEXT_MUTED),
-            ("avg_rt", "Avg Response", "—", TEXT_MUTED),
-            ("outages", "Outages", "0", TEXT_MUTED),
-            ("duration", "Duration", "0:00", TEXT_MUTED),
-            ("health", "Health", "—", TEXT_MUTED),
+            ("status",    "Status",       "Idle",  TEXT_MUTED),
+            ("uptime",    "Uptime",        "—",    TEXT_MUTED),
+            ("samples",   "Samples",       "0",    TEXT_MUTED),
+            ("ping_loss", "Ping Loss",     "—",    TEXT_MUTED),
+            ("avg_rt",    "Avg Response",  "—",    TEXT_MUTED),
+            ("jitter",    "Jitter (σ)",    "—",    TEXT_MUTED),
+            ("outages",   "Outages",       "0",    TEXT_MUTED),
+            ("health",    "Health",        "—",    TEXT_MUTED),
         ]
 
         for i, (key, label, default, color) in enumerate(cards):
@@ -535,6 +535,35 @@ class DeviceMonitorView(ctk.CTkFrame):
                                    font=("Consolas", 7))
 
         # ── Plot data series ──
+        def rolling_band(data, window=15):
+            """Compute rolling min/max band for jitter visualization."""
+            mins, maxs = [], []
+            for i in range(len(data)):
+                chunk = [v for v in data[max(0, i - window + 1):i + 1] if v is not None]
+                if chunk:
+                    mins.append(min(chunk))
+                    maxs.append(max(chunk))
+                else:
+                    mins.append(None)
+                    maxs.append(None)
+            return mins, maxs
+
+        def draw_jitter_band(data, color, alpha_color):
+            """Draw a shaded min/max envelope behind the line."""
+            band_mins, band_maxs = rolling_band(data)
+            poly = []
+            for i, (mn, mx) in enumerate(zip(band_mins, band_maxs)):
+                if mn is not None and mx is not None and max_val > 0:
+                    x = plot_x0 + i * x_step
+                    poly.append((x, plot_y0 + plot_h * (1 - mx / max_val)))
+            for i in range(len(band_maxs) - 1, -1, -1):
+                if band_mins[i] is not None and band_maxs[i] is not None and max_val > 0:
+                    x = plot_x0 + i * x_step
+                    poly.append((x, plot_y0 + plot_h * (1 - band_mins[i] / max_val)))
+            if len(poly) >= 4:
+                flat = [coord for p in poly for coord in p]
+                c.create_polygon(*flat, fill=alpha_color, outline="", stipple="gray25")
+
         def plot_series(data, color):
             points = []
             for i, val in enumerate(data):
@@ -558,6 +587,12 @@ class DeviceMonitorView(ctk.CTkFrame):
             if len(points) >= 2:
                 flat = [coord for p in points for coord in p]
                 c.create_line(*flat, fill=color, width=1.5, smooth=True)
+
+        # Draw jitter bands first (behind lines)
+        if cip_data:
+            draw_jitter_band(cip_data, CHART_LINE_CIP, "#1A2F50")
+        if ping_data:
+            draw_jitter_band(ping_data, CHART_LINE_PING, "#0F2A1A")
 
         if cip_data:
             plot_series(cip_data, CHART_LINE_CIP)
@@ -849,6 +884,18 @@ class DeviceMonitorView(ctk.CTkFrame):
         if avg > 0:
             rt_color = STATUS_GOOD if avg < 20 else STATUS_WARN if avg < 100 else STATUS_ERROR
             self._update_stat("avg_rt", f"{avg:.1f}ms", rt_color)
+
+        # Jitter (rolling std dev of last 20 ping samples)
+        recent_pings = [s.ping_time_ms for s in self._all_samples[-20:]
+                        if s.ping_success and s.ping_time_ms is not None]
+        if len(recent_pings) >= 2:
+            mean = sum(recent_pings) / len(recent_pings)
+            variance = sum((x - mean) ** 2 for x in recent_pings) / (len(recent_pings) - 1)
+            jitter = variance ** 0.5
+            jitter_color = STATUS_GOOD if jitter < 5 else STATUS_WARN if jitter < 20 else STATUS_ERROR
+            self._update_stat("jitter", f"{jitter:.1f}ms", jitter_color)
+        else:
+            self._update_stat("jitter", "—", TEXT_MUTED)
 
         # Outages
         outages = stats.outage_count

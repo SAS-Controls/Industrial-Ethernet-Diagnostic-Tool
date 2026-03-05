@@ -313,18 +313,17 @@ def generate_scan_report(
 
     # Column headers
     col_headers = ["#", "IP Address", "MAC Address", "Vendor / Manufacturer",
-                   "Product Name", "Type", "Ping (ms)", "Ports"]
+                   "Product Name", "Ping (ms)", "Ports"]
 
     # Column widths (landscape letter = ~10" usable)
     col_widths = [
         0.3 * inch,    # #
         1.15 * inch,   # IP
         1.35 * inch,   # MAC
-        1.9 * inch,    # Vendor
-        2.2 * inch,    # Product
-        1.1 * inch,    # Type
+        2.2 * inch,    # Vendor
+        2.8 * inch,    # Product
         0.65 * inch,   # Ping
-        1.35 * inch,   # Ports
+        1.55 * inch,   # Ports
     ]
 
     # Build header row
@@ -389,7 +388,6 @@ def generate_scan_report(
             Paragraph(device.mac_address or "—", style_cell),
             Paragraph(vendor or "Unknown", style_cell),
             Paragraph(product or "—", style_cell),
-            Paragraph(dev_type or "—", style_cell),
             Paragraph(ping_str, style_cell),
             Paragraph(ports_str or "—", style_cell),
         ]
@@ -419,7 +417,7 @@ def generate_scan_report(
         # Number column right-aligned
         ("ALIGN", (0, 0), (0, -1), "CENTER"),
         # Ping column right-aligned
-        ("ALIGN", (6, 0), (6, -1), "CENTER"),
+        ("ALIGN", (5, 0), (5, -1), "CENTER"),
     ]
 
     # Alternating row colors
@@ -433,11 +431,11 @@ def generate_scan_report(
     for i, device in enumerate(devices, 1):
         if device.response_time_ms >= 50:
             table_style_cmds.append(
-                ("TEXTCOLOR", (6, i), (6, i), HexColor("#EF4444"))
+                ("TEXTCOLOR", (5, i), (5, i), HexColor("#EF4444"))
             )
         elif device.response_time_ms >= 20:
             table_style_cmds.append(
-                ("TEXTCOLOR", (6, i), (6, i), HexColor("#F59E0B"))
+                ("TEXTCOLOR", (5, i), (5, i), HexColor("#F59E0B"))
             )
 
     device_table.setStyle(TableStyle(table_style_cmds))
@@ -449,20 +447,24 @@ def generate_scan_report(
         story.append(Spacer(1, 16))
         story.append(Paragraph("EtherNet/IP Device Details", style_heading))
 
-        eip_headers = ["IP Address", "Vendor", "Product Name", "Firmware",
-                       "Serial #", "Status"]
+        eip_headers = ["IP Address", "MAC Address", "Vendor", "Product Name",
+                       "Firmware", "Serial #", "Status"]
         eip_header_row = [Paragraph(h, style_header_cell) for h in eip_headers]
 
         eip_col_widths = [
-            1.2 * inch, 1.6 * inch, 2.5 * inch,
-            0.9 * inch, 1.1 * inch, 2.7 * inch,
+            1.1 * inch, 1.3 * inch, 1.5 * inch, 2.2 * inch,
+            0.85 * inch, 1.0 * inch, 2.05 * inch,
         ]
 
         eip_table_data = [eip_header_row]
         for ip, eid in sorted(eip_devices_list, key=lambda x: tuple(
                 int(p) for p in x[0].split("."))):
+            # Look up MAC for this IP from the devices list
+            dev_mac = next((d.mac_address for d in devices
+                            if d.ip_address == ip), None)
             eip_table_data.append([
                 Paragraph(f"<b>{ip}</b>", style_cell),
+                Paragraph(dev_mac or "—", style_cell),
                 Paragraph(eid.vendor_name or "—", style_cell),
                 Paragraph(eid.product_name or "—", style_cell),
                 Paragraph(eid.firmware_version or "—", style_cell),
@@ -900,6 +902,134 @@ def generate_capture_report(
             # Keep each finding together
             story.append(KeepTogether(finding_block))
 
+    # ── Detailed Data Tables ──────────────────────────────────────────────
+    # TCP Retransmissions by Source
+    if getattr(analysis, "tcp_retx_by_src", None):
+        story.append(Paragraph("TCP Retransmission Sources", style_heading))
+        story.append(Paragraph(
+            "Devices ranked by number of TCP retransmissions sent. "
+            "High-percentage nodes should have their cabling and switch ports inspected.",
+            style_body))
+        story.append(Spacer(1, 6))
+        retx_headers = [
+            Paragraph("Source IP", style_header_cell),
+            Paragraph("Retransmits", style_header_cell),
+            Paragraph("% of Total", style_header_cell),
+            Paragraph("Action", style_header_cell),
+        ]
+        retx_data = [retx_headers]
+        for src_ip, retx_cnt, pct in analysis.tcp_retx_by_src[:10]:
+            action = "⚠ Inspect cable & switch port" if pct >= 25 else "Monitor"
+            retx_data.append([
+                Paragraph(f"<b>{src_ip}</b>", style_cell),
+                Paragraph(str(retx_cnt), style_cell),
+                Paragraph(f"{pct:.0f}%", style_cell),
+                Paragraph(action, style_cell),
+            ])
+        rcw = [avail_w * 0.28, avail_w * 0.18, avail_w * 0.18, avail_w * 0.36]
+        rt = Table(retx_data, colWidths=rcw, repeatRows=1)
+        rt.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), HexColor("#8B5CF6")),
+            ("BOX", (0, 0), (-1, -1), 0.75, HexColor("#8B5CF6")),
+            ("INNERGRID", (0, 1), (-1, -1), 0.25, border_color),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ] + [(("BACKGROUND", (0, i), (-1, i), row_alt)) for i in range(2, len(retx_data), 2)]))
+        story.append(rt)
+
+    # Worst TCP flows
+    if getattr(analysis, "tcp_retx_by_flow", None):
+        story.append(Spacer(1, 10))
+        story.append(Paragraph("Worst Affected TCP Connections", style_heading))
+        flow_headers = [
+            Paragraph("Source IP", style_header_cell),
+            Paragraph("Destination IP", style_header_cell),
+            Paragraph("Retransmits / Total", style_header_cell),
+            Paragraph("Loss Rate", style_header_cell),
+            Paragraph("Priority", style_header_cell),
+        ]
+        flow_data = [flow_headers]
+        for src, dst, retx, total_flow, pct in analysis.tcp_retx_by_flow[:8]:
+            priority = "Inspect First" if pct >= 10 else ("Investigate" if pct >= 3 else "Monitor")
+            flow_data.append([
+                Paragraph(src, style_cell),
+                Paragraph(dst, style_cell),
+                Paragraph(f"{retx} / {total_flow}", style_cell),
+                Paragraph(f"{pct:.1f}%", style_cell),
+                Paragraph(priority, style_cell),
+            ])
+        fcw = [avail_w * 0.22, avail_w * 0.22, avail_w * 0.22, avail_w * 0.14, avail_w * 0.20]
+        ft = Table(flow_data, colWidths=fcw, repeatRows=1)
+        ft.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), HexColor("#8B5CF6")),
+            ("BOX", (0, 0), (-1, -1), 0.75, HexColor("#8B5CF6")),
+            ("INNERGRID", (0, 1), (-1, -1), 0.25, border_color),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ] + [(("BACKGROUND", (0, i), (-1, i), row_alt)) for i in range(2, len(flow_data), 2)]))
+        story.append(ft)
+
+    # ARP Conflicts
+    if getattr(analysis, "arp_conflicts", None):
+        story.append(Spacer(1, 10))
+        story.append(Paragraph("Detected IP/MAC Conflicts", style_heading))
+        conf_headers = [
+            Paragraph("IP Address", style_header_cell),
+            Paragraph("Observed MACs", style_header_cell),
+            Paragraph("Count", style_header_cell),
+        ]
+        conf_data = [conf_headers]
+        for conflict in analysis.arp_conflicts[:10]:
+            macs = ", ".join(conflict.get("macs", []))
+            conf_data.append([
+                Paragraph(conflict.get("ip", "?"), style_cell),
+                Paragraph(macs, style_cell),
+                Paragraph(str(conflict.get("count", "?")), style_cell),
+            ])
+        ccw = [avail_w * 0.25, avail_w * 0.55, avail_w * 0.20]
+        ct = Table(conf_data, colWidths=ccw, repeatRows=1)
+        ct.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), HexColor("#EF4444")),
+            ("BOX", (0, 0), (-1, -1), 0.75, HexColor("#EF4444")),
+            ("INNERGRID", (0, 1), (-1, -1), 0.25, border_color),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ] + [(("BACKGROUND", (0, i), (-1, i), row_alt)) for i in range(2, len(conf_data), 2)]))
+        story.append(ct)
+
+    # Top ARP talkers
+    if getattr(analysis, "arp_requests_by_src", None):
+        story.append(Spacer(1, 10))
+        story.append(Paragraph("Top ARP Request Sources", style_heading))
+        arp_headers = [
+            Paragraph("Source IP", style_header_cell),
+            Paragraph("ARP Requests", style_header_cell),
+            Paragraph("% of ARP Total", style_header_cell),
+        ]
+        arp_data = [arp_headers]
+        total_arp = sum(c for _, c in analysis.arp_requests_by_src)
+        for ip, cnt in analysis.arp_requests_by_src[:10]:
+            pct = cnt / total_arp * 100 if total_arp else 0
+            arp_data.append([
+                Paragraph(ip, style_cell),
+                Paragraph(str(cnt), style_cell),
+                Paragraph(f"{pct:.0f}%", style_cell),
+            ])
+        acw = [avail_w * 0.40, avail_w * 0.30, avail_w * 0.30]
+        at = Table(arp_data, colWidths=acw, repeatRows=1)
+        at.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), sas_orange),
+            ("BOX", (0, 0), (-1, -1), 0.75, sas_orange),
+            ("INNERGRID", (0, 1), (-1, -1), 0.25, border_color),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ] + [(("BACKGROUND", (0, i), (-1, i), row_alt)) for i in range(2, len(arp_data), 2)]))
+        story.append(at)
+
     # ── Footer ────────────────────────────────────────────────────────────
     story.append(Spacer(1, 16))
     footer_rule = Table([[""]], colWidths=[avail_w])
@@ -1188,25 +1318,116 @@ def generate_monitor_report(
 
     # ── Health Score + Findings (if analysis was run) ──
     if report:
-        story.append(Paragraph("Analysis Results", sd["heading"]))
-        story.append(Paragraph(
-            f"<b>Health Score:</b> {report.health_score}/100 — {report.health_label}",
-            sd["body"]))
+        story.append(Paragraph("Diagnostic Analysis", sd["heading"]))
+
+        # Health score banner
+        score = report.health_score
+        if score >= 80:
+            banner_color = HexColor("#166534")
+            banner_bg    = HexColor("#DCFCE7")
+            health_label = "✅  Healthy"
+        elif score >= 60:
+            banner_color = HexColor("#92400E")
+            banner_bg    = HexColor("#FEF3C7")
+            health_label = "⚠  Degraded"
+        else:
+            banner_color = HexColor("#991B1B")
+            banner_bg    = HexColor("#FEE2E2")
+            health_label = "🔴  Critical"
+
+        avail_w = page_w - 1.0 * inch
+        banner_t = Table(
+            [[Paragraph(
+                f"<font color='#{banner_color.hexval()[1:]}'>"
+                f"<b>Health Score: {score}/100 — {health_label}</b></font>",
+                sd["body"])]],
+            colWidths=[avail_w])
+        banner_t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), banner_bg),
+            ("BOX", (0, 0), (-1, -1), 0.5, banner_color),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ("LEFTPADDING", (0, 0), (-1, -1), 10),
+        ]))
+        story.append(banner_t)
+
         if report.summary:
+            story.append(Spacer(1, 4))
             story.append(Paragraph(report.summary, sd["body"]))
-        story.append(Spacer(1, 6))
+        story.append(Spacer(1, 8))
 
         if report.findings:
-            for f in report.findings:
-                sev = getattr(f, 'severity', 'info')
-                icon = {"critical": "🔴", "warning": "🟡", "ok": "🟢"}.get(sev, "ℹ️")
-                title_text = getattr(f, 'title', str(f))
-                summary_text = getattr(f, 'summary', '')
-                story.append(KeepTogether([
-                    Paragraph(f"{icon} <b>{title_text}</b>", sd["cell_bold"]),
-                    Paragraph(summary_text, sd["cell"]) if summary_text else Spacer(1, 1),
-                    Spacer(1, 4),
+            story.append(Paragraph("Findings & Recommendations", sd["heading"]))
+            for finding in report.findings:
+                sev       = getattr(finding, 'severity', 'info')
+                title_txt = getattr(finding, 'title', str(finding))
+                desc_txt  = getattr(finding, 'description', '')
+                cause_txt = getattr(finding, 'likely_cause', '')
+                suggest_txt = getattr(finding, 'suggestion', '')
+                metric_txt  = getattr(finding, 'metric_value', '')
+
+                sev_icon  = {"critical": "🔴", "warning": "🟡", "info": "🔵"}.get(sev, "ℹ️")
+                sev_color = {"critical": HexColor("#EF4444"),
+                             "warning":  HexColor("#F59E0B"),
+                             "info":     HexColor("#3B82F6")}.get(sev, HexColor("#6B7280"))
+                sev_bg    = {"critical": HexColor("#FEE2E2"),
+                             "warning":  HexColor("#FEF3C7"),
+                             "info":     HexColor("#EFF6FF")}.get(sev, HexColor("#F9FAFB"))
+
+                # Finding title bar
+                title_row = Table(
+                    [[Paragraph(f"{sev_icon} <b>{title_txt}</b>", sd["cell_bold"])]],
+                    colWidths=[avail_w])
+                title_row.setStyle(TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, -1), sev_bg),
+                    ("LINEBELOW", (0, 0), (-1, -1), 1.5, sev_color),
+                    ("TOPPADDING", (0, 0), (-1, -1), 5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 8),
                 ]))
+
+                # Build detail rows
+                detail_rows = []
+                if metric_txt:
+                    detail_rows.append([
+                        Paragraph("<b>Observed:</b>", sd["cell"]),
+                        Paragraph(metric_txt, sd["cell_bold"]),
+                    ])
+                if desc_txt:
+                    detail_rows.append([
+                        Paragraph("<b>What Was Found:</b>", sd["cell"]),
+                        Paragraph(desc_txt, sd["cell"]),
+                    ])
+                if cause_txt:
+                    detail_rows.append([
+                        Paragraph("<b>What This Means:</b>", sd["cell"]),
+                        Paragraph(cause_txt, sd["cell"]),
+                    ])
+                if suggest_txt:
+                    detail_rows.append([
+                        Paragraph("<b>What To Do:</b>", sd["cell_bold"]),
+                        Paragraph(suggest_txt, sd["cell"]),
+                    ])
+
+                detail_block_parts = [title_row]
+                if detail_rows:
+                    lw = avail_w * 0.22
+                    rw = avail_w - lw
+                    det_t = Table(detail_rows, colWidths=[lw, rw])
+                    det_t.setStyle(TableStyle([
+                        ("BOX", (0, 0), (-1, -1), 0.5, HexColor(BORDER_HEX)),
+                        ("LINEBELOW", (0, 0), (-1, -2), 0.25, HexColor(BORDER_HEX)),
+                        ("BACKGROUND", (0, 0), (0, -1), HexColor(HEADER_BG_HEX)),
+                        ("TOPPADDING", (0, 0), (-1, -1), 4),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ]))
+                    detail_block_parts.append(det_t)
+
+                detail_block_parts.append(Spacer(1, 8))
+                story.append(KeepTogether(detail_block_parts))
+
             story.append(Spacer(1, 6))
 
     # ── Outage Log ──
@@ -1807,11 +2028,12 @@ def generate_multi_monitor_report(
     elapsed_seconds: float = 0,
     sample_count: int = 0,
     chart_image_path: str = "",      # Path to trend chart PNG
+    analysis_reports: dict = None,   # Dict[str, AnalysisReport] (optional)
     output_path: str = "",
 ) -> str:
     """
     Generate a branded PDF report for multi-device monitoring session.
-    Includes trend chart image and per-device analytics.
+    Includes trend chart image, per-device analytics, and full diagnostic findings.
     """
     from reportlab.lib.pagesizes import letter, landscape
     from reportlab.lib.units import inch
@@ -1970,6 +2192,108 @@ def generate_multi_monitor_report(
     ]))
     story.append(t)
 
+    # ── Per-Device Diagnostic Findings ──
+    if analysis_reports:
+        story.append(Paragraph("Diagnostic Findings by Device", sd["heading"]))
+        avail_w = page_w - 1.0 * inch
+
+        for t in targets:
+            report = analysis_reports.get(t.ip)
+            if not report:
+                continue
+
+            dev_label = t.display_name if hasattr(t, 'display_name') else t.ip
+
+            # Device section header
+            dev_hdr = Table(
+                [[Paragraph(f"<b>{dev_label}  ({t.ip})</b>  — Health: {report.health_score}/100 {report.health_label}", sd["cell_bold"])]],
+                colWidths=[avail_w])
+            dev_hdr.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, -1), header_bg),
+                ("TEXTCOLOR", (0, 0), (-1, -1), white),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ("LEFTPADDING", (0, 0), (-1, -1), 10),
+            ]))
+            story.append(Spacer(1, 8))
+            story.append(dev_hdr)
+
+            if not report.findings:
+                story.append(Paragraph("   ✅  No issues detected for this device.", sd["body"]))
+                continue
+
+            if report.summary:
+                story.append(Spacer(1, 4))
+                story.append(Paragraph(report.summary, sd["body"]))
+
+            for finding in report.findings:
+                sev         = getattr(finding, 'severity', 'info')
+                title_txt   = getattr(finding, 'title', str(finding))
+                desc_txt    = getattr(finding, 'description', '')
+                cause_txt   = getattr(finding, 'likely_cause', '')
+                suggest_txt = getattr(finding, 'suggestion', '')
+                metric_txt  = getattr(finding, 'metric_value', '')
+
+                sev_icon  = {"critical": "🔴", "warning": "🟡", "info": "🔵"}.get(sev, "ℹ️")
+                sev_color = {"critical": HexColor("#EF4444"),
+                             "warning":  HexColor("#F59E0B"),
+                             "info":     HexColor("#3B82F6")}.get(sev, HexColor("#6B7280"))
+                sev_bg    = {"critical": HexColor("#FEE2E2"),
+                             "warning":  HexColor("#FEF3C7"),
+                             "info":     HexColor("#EFF6FF")}.get(sev, HexColor("#F9FAFB"))
+
+                title_row = Table(
+                    [[Paragraph(f"{sev_icon} <b>{title_txt}</b>", sd["cell_bold"])]],
+                    colWidths=[avail_w])
+                title_row.setStyle(TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, -1), sev_bg),
+                    ("LINEBELOW", (0, 0), (-1, -1), 1.5, sev_color),
+                    ("TOPPADDING", (0, 0), (-1, -1), 5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ]))
+
+                detail_rows = []
+                if metric_txt:
+                    detail_rows.append([
+                        Paragraph("<b>Observed:</b>", sd["cell"]),
+                        Paragraph(metric_txt, sd["cell_bold"]),
+                    ])
+                if desc_txt:
+                    detail_rows.append([
+                        Paragraph("<b>What Was Found:</b>", sd["cell"]),
+                        Paragraph(desc_txt, sd["cell"]),
+                    ])
+                if cause_txt:
+                    detail_rows.append([
+                        Paragraph("<b>What This Means:</b>", sd["cell"]),
+                        Paragraph(cause_txt, sd["cell"]),
+                    ])
+                if suggest_txt:
+                    detail_rows.append([
+                        Paragraph("<b>What To Do:</b>", sd["cell_bold"]),
+                        Paragraph(suggest_txt, sd["cell"]),
+                    ])
+
+                detail_block_parts = [title_row]
+                if detail_rows:
+                    lw = avail_w * 0.22
+                    rw = avail_w - lw
+                    det_t = Table(detail_rows, colWidths=[lw, rw])
+                    det_t.setStyle(TableStyle([
+                        ("BOX", (0, 0), (-1, -1), 0.5, HexColor(BORDER_HEX)),
+                        ("LINEBELOW", (0, 0), (-1, -2), 0.25, HexColor(BORDER_HEX)),
+                        ("BACKGROUND", (0, 0), (0, -1), HexColor(HEADER_BG_HEX)),
+                        ("TOPPADDING", (0, 0), (-1, -1), 4),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ]))
+                    detail_block_parts.append(det_t)
+
+                detail_block_parts.append(Spacer(1, 6))
+                story.append(KeepTogether(detail_block_parts))
+
     # Footer
     story.append(Spacer(1, 20))
     story.append(Paragraph(
@@ -1979,4 +2303,271 @@ def generate_multi_monitor_report(
     pn = _make_page_number_func(page_w, inch)
     doc.build(story, onFirstPage=pn, onLaterPages=pn)
     logger.info(f"Multi-monitor report generated: {output_path}")
+    return output_path
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Link Quality Report
+# ══════════════════════════════════════════════════════════════════════════════
+
+def generate_link_quality_report(
+    target_ip: str,
+    analysis,          # LQAnalysis
+    size_results: list,  # List[LinkSizeResult]
+    output_path: str = "",
+) -> str:
+    """
+    Generate a branded PDF report for a Link Quality Analyzer test.
+    Includes the RTT vs payload size table, burst test stats, health score,
+    and all diagnostic findings.
+    """
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.units import inch
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.enums import TA_CENTER, TA_RIGHT
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, KeepTogether,
+    )
+    from reportlab.lib.colors import HexColor, white
+
+    if not output_path:
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        docs_dir = os.path.join(os.path.expanduser("~"), "Documents")
+        os.makedirs(docs_dir, exist_ok=True)
+        output_path = os.path.join(docs_dir, f"LinkQuality_{target_ip.replace('.','_')}_{timestamp}.pdf")
+
+    sas_blue   = HexColor(SAS_BLUE_HEX)
+    sas_orange = HexColor(SAS_ORANGE_HEX)
+    text_dark  = HexColor(TEXT_DARK_HEX)
+    text_sec   = HexColor(TEXT_SECONDARY_HEX)
+    border_c   = HexColor(BORDER_HEX)
+    row_alt    = HexColor(ROW_ALT_HEX)
+
+    sev_colors = {
+        "ok":       HexColor("#22C55E"),
+        "warning":  HexColor("#F59E0B"),
+        "critical": HexColor("#EF4444"),
+    }
+
+    page_w, page_h = letter
+    doc = SimpleDocTemplate(
+        output_path, pagesize=letter,
+        leftMargin=0.6 * inch, rightMargin=0.6 * inch,
+        topMargin=0.5 * inch, bottomMargin=0.6 * inch,
+    )
+
+    styles = getSampleStyleSheet()
+    style_title   = ParagraphStyle("LQTitle", parent=styles["Title"],
+                                    fontName="Helvetica-Bold", fontSize=18,
+                                    textColor=sas_blue, spaceAfter=4)
+    style_heading = ParagraphStyle("LQH2", parent=styles["Heading2"],
+                                    fontName="Helvetica-Bold", fontSize=11,
+                                    textColor=sas_blue, spaceBefore=12, spaceAfter=5)
+    style_body    = ParagraphStyle("LQBody", parent=styles["Normal"],
+                                    fontName="Helvetica", fontSize=9, textColor=text_dark)
+    style_small   = ParagraphStyle("LQSmall", parent=styles["Normal"],
+                                    fontName="Helvetica", fontSize=8, textColor=text_sec)
+    style_cell    = ParagraphStyle("LQCell", parent=styles["Normal"],
+                                    fontName="Helvetica", fontSize=8,
+                                    textColor=text_dark, leading=10)
+    style_cell_b  = ParagraphStyle("LQCellB", parent=style_cell,
+                                    fontName="Helvetica-Bold")
+    style_hdr_c   = ParagraphStyle("LQHdrC", parent=styles["Normal"],
+                                    fontName="Helvetica-Bold", fontSize=8,
+                                    textColor=white, leading=10)
+    style_footer  = ParagraphStyle("LQFtr", parent=styles["Normal"],
+                                    fontName="Helvetica", fontSize=7,
+                                    textColor=text_sec, alignment=TA_CENTER)
+
+    avail_w = page_w - 1.2 * inch
+    story   = []
+    now     = datetime.now()
+
+    # ── Header ──────────────────────────────────────────────────────────────
+    logo_path = _get_logo_path()
+    from reportlab.platypus import Image as RLImage
+    if logo_path:
+        try:
+            logo_img = RLImage(logo_path, width=1.1 * inch, height=0.92 * inch)
+        except Exception:
+            logo_img = Paragraph('<font name="Helvetica-Bold" size="14">SAS</font>', style_body)
+    else:
+        logo_img = Paragraph('<font name="Helvetica-Bold" size="14">SAS</font>', style_body)
+
+    company_text = (
+        f'<font name="Helvetica-Bold" size="12" color="{SAS_BLUE_HEX}">Southern Automation Solutions</font><br/>'
+        f'<font name="Helvetica" size="8" color="{TEXT_SECONDARY_HEX}">111 Hemlock St. Ste A, Valdosta, GA 31601</font><br/>'
+        f'<font name="Helvetica" size="8" color="{TEXT_SECONDARY_HEX}">Contact@SASControls.com  |  229-563-2897</font>'
+    )
+    date_para = Paragraph(
+        f'<font name="Helvetica" size="8" color="{TEXT_SECONDARY_HEX}">'
+        f'{now.strftime("%B %d, %Y")}<br/>{now.strftime("%I:%M %p")}</font>',
+        ParagraphStyle("DR_LQ", parent=style_body, alignment=TA_RIGHT))
+
+    hdr_tbl = Table(
+        [[logo_img, Paragraph(company_text, style_body), date_para]],
+        colWidths=[1.3 * inch, avail_w - 2.6 * inch, 1.3 * inch])
+    hdr_tbl.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    story.append(hdr_tbl)
+
+    rule = Table([[""]], colWidths=[avail_w])
+    rule.setStyle(TableStyle([
+        ("LINEABOVE", (0, 0), (-1, 0), 2, sas_blue),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+    ]))
+    story.append(Spacer(1, 6))
+    story.append(rule)
+    story.append(Spacer(1, 10))
+
+    story.append(Paragraph("Link Quality Analysis Report", style_title))
+    story.append(Paragraph(
+        f"<b>Target IP:</b> {target_ip}  &nbsp;&nbsp; "
+        f"<b>Test Date:</b> {now.strftime('%Y-%m-%d %H:%M:%S')}",
+        style_body))
+    story.append(Spacer(1, 8))
+
+    # ── Health Score ─────────────────────────────────────────────────────────
+    score = getattr(analysis, "health_score", 0)
+    score_color = HexColor("#22C55E") if score >= 80 else (
+        HexColor("#F59E0B") if score >= 60 else HexColor("#EF4444"))
+    score_label = "Good" if score >= 80 else ("Fair" if score >= 60 else "Poor")
+    story.append(Paragraph(
+        f'<font name="Helvetica-Bold" size="20" color="{score_color.hexval()}">'
+        f'{score}/100</font>  '
+        f'<font name="Helvetica" size="10" color="{TEXT_SECONDARY_HEX}">'
+        f'Link Health: {score_label}</font>',
+        style_body))
+    story.append(Spacer(1, 8))
+
+    # ── RTT vs Payload Table ─────────────────────────────────────────────────
+    if size_results:
+        story.append(Paragraph("Response Time vs. Payload Size", style_heading))
+        story.append(Paragraph(
+            "Each row shows the average ping round-trip time at a given payload size. "
+            "Timeouts or loss before 1472 bytes typically indicate an MTU issue.",
+            style_small))
+        story.append(Spacer(1, 4))
+
+        rtt_headers = [
+            Paragraph("Payload (B)", style_hdr_c),
+            Paragraph("Avg RTT (ms)", style_hdr_c),
+            Paragraph("Jitter (ms)", style_hdr_c),
+            Paragraph("Packet Loss", style_hdr_c),
+            Paragraph("Status", style_hdr_c),
+        ]
+        rtt_data = [rtt_headers]
+        for r in size_results:
+            if r.timed_out or not r.ok:
+                status = "TIMEOUT"
+                avg_s = "—"
+                jit_s = "—"
+                loss_s = "100%"
+                s_color = HexColor("#EF4444")
+            else:
+                status = "OK" if r.loss_pct == 0 else "LOSS"
+                avg_s = f"{r.avg_ms:.1f}"
+                jit_s = f"{r.jitter_ms:.1f}" if r.jitter_ms else "—"
+                loss_s = f"{r.loss_pct:.0f}%"
+                s_color = HexColor("#22C55E") if r.loss_pct == 0 else HexColor("#F59E0B")
+            rtt_data.append([
+                Paragraph(str(r.payload_bytes), style_cell_b),
+                Paragraph(avg_s, style_cell),
+                Paragraph(jit_s, style_cell),
+                Paragraph(loss_s, style_cell),
+                Paragraph(f'<font color="{s_color.hexval()}">{status}</font>', style_cell_b),
+            ])
+
+        rcw = [avail_w * 0.18, avail_w * 0.22, avail_w * 0.20, avail_w * 0.18, avail_w * 0.22]
+        rt_tbl = Table(rtt_data, colWidths=rcw, repeatRows=1)
+        rt_tbl.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), sas_blue),
+            ("BOX", (0, 0), (-1, -1), 0.75, sas_blue),
+            ("INNERGRID", (0, 1), (-1, -1), 0.25, border_c),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("ALIGN", (1, 0), (3, -1), "RIGHT"),
+        ] + [("BACKGROUND", (0, i), (-1, i), row_alt) for i in range(2, len(rtt_data), 2)]))
+        story.append(rt_tbl)
+
+    # ── Burst Test ───────────────────────────────────────────────────────────
+    br = getattr(analysis, "burst_result", None)
+    if br and br.received > 0:
+        story.append(Paragraph("Burst Load Test Results", style_heading))
+        burst_rows = [
+            ["Avg RTT",    f"{br.avg_ms:.1f} ms"],
+            ["Min RTT",    f"{br.min_ms:.1f} ms"],
+            ["Max RTT",    f"{br.max_ms:.1f} ms"],
+            ["Jitter (σ)", f"{br.jitter_ms:.1f} ms"],
+            ["Packet Loss",f"{br.loss_pct:.0f}%"],
+        ]
+        burst_data = [
+            [Paragraph("<b>Metric</b>", style_hdr_c), Paragraph("<b>Value</b>", style_hdr_c)],
+        ] + [[Paragraph(k, style_cell), Paragraph(v, style_cell_b)] for k, v in burst_rows]
+
+        bt_tbl = Table(burst_data, colWidths=[avail_w * 0.5, avail_w * 0.5])
+        bt_tbl.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), sas_blue),
+            ("BOX", (0, 0), (-1, -1), 0.75, sas_blue),
+            ("INNERGRID", (0, 1), (-1, -1), 0.25, border_c),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ] + [("BACKGROUND", (0, i), (-1, i), row_alt) for i in range(2, len(burst_data), 2)]))
+        story.append(bt_tbl)
+
+    # MTU Limit
+    if getattr(analysis, "mtu_limit", None):
+        story.append(Spacer(1, 8))
+        story.append(Paragraph(
+            f"<b>Largest Clean Payload:</b> {analysis.mtu_limit} bytes  "
+            f"(frames larger than this experienced loss or timeout)",
+            style_body))
+
+    # ── Findings ─────────────────────────────────────────────────────────────
+    if getattr(analysis, "findings", None):
+        story.append(Paragraph("Diagnostic Findings", style_heading))
+        for f in analysis.findings:
+            sev_c = sev_colors.get(getattr(f, "severity", "ok"), text_sec)
+            sev_label = getattr(f, "severity", "ok").upper()
+            block = [
+                Paragraph(
+                    f'<font name="Helvetica-Bold" size="8" color="{sev_c.hexval()}">[{sev_label}]</font>  '
+                    f'<font name="Helvetica-Bold" size="9">{f.title}</font>',
+                    ParagraphStyle("LQFindT", parent=style_body, spaceAfter=2)),
+                Paragraph(f.detail, ParagraphStyle("LQFindD", parent=style_small, leftIndent=8)),
+                Spacer(1, 6),
+            ]
+            story.append(KeepTogether(block))
+
+    # ── Footer ────────────────────────────────────────────────────────────────
+    story.append(Spacer(1, 16))
+    frule = Table([[""]], colWidths=[avail_w])
+    frule.setStyle(TableStyle([
+        ("LINEABOVE", (0, 0), (-1, 0), 0.5, border_c),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+    ]))
+    story.append(frule)
+    story.append(Spacer(1, 4))
+    story.append(Paragraph(
+        f"Generated by SAS Network Diagnostic Tool  |  "
+        f"Southern Automation Solutions  |  {now.strftime('%Y-%m-%d %H:%M:%S')}",
+        style_footer))
+
+    def _add_page_numbers(canvas_obj, doc_obj):
+        canvas_obj.saveState()
+        canvas_obj.setFont("Helvetica", 7)
+        canvas_obj.setFillColor(HexColor(TEXT_SECONDARY_HEX))
+        canvas_obj.drawRightString(page_w - 0.6 * inch, 0.35 * inch,
+                                    f"Page {doc_obj.page}")
+        canvas_obj.restoreState()
+
+    doc.build(story, onFirstPage=_add_page_numbers, onLaterPages=_add_page_numbers)
+    logger.info(f"Link quality report generated: {output_path}")
     return output_path

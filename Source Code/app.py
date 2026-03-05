@@ -27,6 +27,7 @@ from ui.bootp_view import BOOTPView
 from ui.dhcp_view import DHCPServerView
 from ui.multi_monitor_view import MultiMonitorView
 from ui.mac_lookup_view import MACLookupView
+from ui.link_quality_view import LinkQualityView
 from ui.settings_view import SettingsView
 from ui.help_view import HelpView
 
@@ -139,6 +140,7 @@ class App(ctk.CTk):
         self._add_nav_button("monitor", "📊  Device Monitor", self._show_monitor_view)
         self._add_nav_button("multi_mon", "📈  Multi-Device Monitor", self._show_multi_monitor_view)
         self._add_nav_button("capture", "🦈  Packet Capture", self._show_capture_view)
+        self._add_nav_button("linkqual", "🔬  Link Quality", self._show_link_quality_view)
 
         # Separator
         ctk.CTkFrame(self._sidebar, fg_color=BORDER_COLOR, height=1).pack(
@@ -234,6 +236,7 @@ class App(ctk.CTk):
         self._dhcp_view = DHCPServerView(self._main_area)
         self._multi_monitor_view = MultiMonitorView(self._main_area)
         self._mac_lookup_view = MACLookupView(self._main_area)
+        self._link_quality_view = LinkQualityView(self._main_area)
         self._settings_view = SettingsView(
             self._main_area, on_theme_change=self._on_theme_change)
         self._help_view = HelpView(self._main_area)
@@ -251,6 +254,7 @@ class App(ctk.CTk):
         self._dhcp_view.pack_forget()
         self._multi_monitor_view.pack_forget()
         self._mac_lookup_view.pack_forget()
+        self._link_quality_view.pack_forget()
         self._settings_view.pack_forget()
         self._help_view.pack_forget()
 
@@ -306,6 +310,12 @@ class App(ctk.CTk):
         self._multi_monitor_view.pack(fill="both", expand=True)
         self._multi_monitor_view.on_show()
         self._set_active_nav("multi_mon")
+
+    def _show_link_quality_view(self):
+        self._hide_all_views()
+        self._link_quality_view.pack(fill="both", expand=True)
+        self._link_quality_view.on_show()
+        self._set_active_nav("linkqual")
 
     def _show_mac_lookup_view(self):
         self._hide_all_views()

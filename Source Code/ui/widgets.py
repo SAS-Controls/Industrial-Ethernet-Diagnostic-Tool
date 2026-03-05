@@ -119,14 +119,20 @@ class InfoCard(ctk.CTkFrame):
 
 
 class FindingCard(ctk.CTkFrame):
-    """Displays a single diagnostic finding with severity icon and expandable details."""
+    """Displays a single diagnostic finding with severity icon and expandable details.
+
+    Optional extra_widget_fn: callable(frame) that adds custom widgets into the
+    details panel.  Used to inject per-finding tables (retransmission node list,
+    top-talker table, etc.) that are too rich for plain label text.
+    """
 
     def __init__(self, master, title: str, severity: str, summary: str,
                  explanation: str = "", recommendation: str = "",
-                 raw_value: str = "", **kwargs):
+                 raw_value: str = "", extra_widget_fn=None, **kwargs):
         super().__init__(master, corner_radius=CARD_CORNER_RADIUS,
                          fg_color=BG_CARD, border_width=1,
                          border_color=BORDER_COLOR, **kwargs)
+        self._extra_widget_fn = extra_widget_fn
 
         severity_colors = {
             "ok": STATUS_GOOD,
@@ -189,6 +195,14 @@ class FindingCard(ctk.CTkFrame):
                              font=(FONT_FAMILY_MONO, FONT_SIZE_TINY),
                              text_color=TEXT_MUTED, anchor="w").pack(
                     fill="x", padx=12, pady=(4, 10))
+
+            # Extra widget section (injected per-finding tables etc.)
+            if extra_widget_fn:
+                self._extra_widget_fn = extra_widget_fn
+                self._extra_placeholder = ctk.CTkFrame(
+                    self._details_frame, fg_color="transparent")
+                self._extra_placeholder.pack(fill="x", padx=4, pady=(4, 6))
+                extra_widget_fn(self._extra_placeholder)
 
             toggle_btn = ctk.CTkButton(
                 self, text="Show Details ▸", font=(FONT_FAMILY, FONT_SIZE_SMALL),

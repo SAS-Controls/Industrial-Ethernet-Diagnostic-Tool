@@ -564,6 +564,7 @@ class PacketCaptureView(ctk.CTkFrame):
             fill="x", pady=(8, 6))
 
         for finding in a.findings:
+            extra_fn = self._get_finding_extra_fn(finding, a)
             FindingCard(
                 self._results_frame,
                 title=finding.title,
@@ -572,9 +573,426 @@ class PacketCaptureView(ctk.CTkFrame):
                 explanation=finding.explanation,
                 recommendation=finding.recommendation,
                 raw_value=finding.raw_value,
+                extra_widget_fn=extra_fn,
             ).pack(fill="x", pady=(0, 8))
 
-    # ── Protocol Donut Chart ──────────────────────────────────────────────────
+    # ── Per-Finding Detail Widget Builders ────────────────────────────────────
+
+    def _get_finding_extra_fn(self, finding, a):
+        """Return an extra_widget_fn for a finding, or None if not applicable."""
+        title = finding.title
+        # TCP retransmission node breakdown
+        if "TCP Retransmission" in title or "Retransmission" in title:
+            if a.tcp_retx_by_src or a.tcp_retx_by_flow:
+                return lambda frame, _a=a: self._build_retx_detail(frame, _a)
+        # Broadcast - show top broadcast sources
+        if "Broadcast" in title and a.arp_requests_by_src:
+            return lambda frame, _a=a: self._build_arp_chatter_detail(frame, _a)
+        # ARP - show conflict/chatter table
+        if "ARP" in title or "Duplicate IP" in title or "Conflict" in title:
+            if a.arp_conflicts:
+                return lambda frame, _a=a: self._build_arp_conflict_detail(frame, _a)
+            elif a.arp_requests_by_src:
+                return lambda frame, _a=a: self._build_arp_chatter_detail(frame, _a)
+        # Gratuitous ARP
+        if "Gratuitous" in title:
+            return lambda frame, _a=a: self._build_grat_arp_detail(frame, _a)
+        # Top talkers / bandwidth hog
+        if "Bandwidth" in title or "Talker" in title:
+            if a.top_talkers_by_bytes:
+                return lambda frame, _a=a: self._build_talker_detail(frame, _a)
+        # Protocol breakdown
+        if "Protocol" in title or "Non-Industrial" in title:
+            if a.protocol_breakdown:
+                return lambda frame, _a=a: self._build_protocol_detail(frame, _a)
+        # STP findings
+        if "STP" in title or "Spanning Tree" in title:
+            return lambda frame, _a=a: self._build_stp_detail(frame, _a)
+        # Multicast findings
+        if "Multicast" in title:
+            return lambda frame, _a=a: self._build_multicast_detail(frame, _a)
+        # Unanswered ARP
+        if "Unanswered" in title:
+            return lambda frame, _a=a: self._build_arp_chatter_detail(frame, _a)
+        # Capture summary / health overview
+        if "Capture Summary" in title or "Health" in title:
+            return lambda frame, _a=a: self._build_summary_detail(frame, _a)
+        return None
+
+        # ── Per-Finding Detail Widget Builders ──────────────────────────────────────────
+
+    def _build_retx_detail(self, parent, a):
+        """Node-level retransmission breakdown — injected into FindingCard details panel."""
+        body = parent
+
+        # ── Source IP table ──
+        if a.tcp_retx_by_src:
+            ctk.CTkLabel(body, text="By Source Node  (sorted by retransmit count)",
+                         font=(FONT_FAMILY, FONT_SIZE_SMALL, "bold"),
+                         text_color=TEXT_SECONDARY).pack(anchor="w", pady=(0, 4))
+
+            src_frame = ctk.CTkFrame(body, fg_color=resolve_color(BG_DARK),
+                                      corner_radius=6)
+            src_frame.pack(fill="x", pady=(0, 12))
+
+            # Header row
+            hrow = ctk.CTkFrame(src_frame, fg_color=resolve_color(BG_MEDIUM))
+            hrow.pack(fill="x", padx=2, pady=(2, 0))
+            for txt, w in [("Source IP", 160), ("Retransmits", 100),
+                            ("% of Total Retransmits", 180), ("Action", 280)]:
+                ctk.CTkLabel(hrow, text=txt, width=w,
+                              font=(FONT_FAMILY, FONT_SIZE_SMALL, "bold"),
+                              text_color=TEXT_SECONDARY, anchor="w").pack(side="left", padx=8, pady=4)
+
+            total_retx = a.tcp_retransmissions
+            for idx2, (src_ip, retx_cnt, pct) in enumerate(a.tcp_retx_by_src[:8]):
+                row_bg = resolve_color(BG_DARK) if idx2 % 2 == 0 else resolve_color(BG_MEDIUM)
+                # Severity color for the count
+                if pct >= 50:
+                    cnt_color = STATUS_ERROR
+                elif pct >= 25:
+                    cnt_color = STATUS_WARN
+                else:
+                    cnt_color = TEXT_PRIMARY
+
+                drow = ctk.CTkFrame(src_frame, fg_color=row_bg)
+                drow.pack(fill="x", padx=2, pady=1)
+
+                ctk.CTkLabel(drow, text=src_ip, width=160,
+                              font=(FONT_FAMILY_MONO, FONT_SIZE_SMALL),
+                              text_color=TEXT_PRIMARY, anchor="w").pack(side="left", padx=8, pady=3)
+
+                ctk.CTkLabel(drow, text=str(retx_cnt), width=100,
+                              font=(FONT_FAMILY_MONO, FONT_SIZE_SMALL, "bold"),
+                              text_color=cnt_color, anchor="w").pack(side="left", padx=8)
+
+                # Bar + percentage
+                bar_outer = ctk.CTkFrame(drow, fg_color=resolve_color(BG_MEDIUM),
+                                          corner_radius=4, width=160, height=14)
+                bar_outer.pack(side="left", padx=4)
+                bar_outer.pack_propagate(False)
+                fill_w = max(4, int(160 * pct / 100))
+                bar_fill = ctk.CTkFrame(bar_outer, fg_color=cnt_color,
+                                         corner_radius=4, width=fill_w, height=14)
+                bar_fill.place(x=0, y=0)
+                ctk.CTkLabel(drow, text=f"{pct:.0f}%", width=40,
+                              font=(FONT_FAMILY_MONO, FONT_SIZE_SMALL),
+                              text_color=cnt_color, anchor="w").pack(side="left", padx=4)
+
+                # Action hint
+                action = "⚠ Inspect cable & switch port for this device" if pct >= 25 else "Check cable/port if issue persists"
+                ctk.CTkLabel(drow, text=action,
+                              font=(FONT_FAMILY, FONT_SIZE_TINY),
+                              text_color=TEXT_MUTED, anchor="w").pack(side="left", padx=8)
+
+        # ── Worst flows table ──
+        if a.tcp_retx_by_flow:
+            ctk.CTkLabel(body,
+                         text="Worst Affected Connections  (source → destination, by retransmit count)",
+                         font=(FONT_FAMILY, FONT_SIZE_SMALL, "bold"),
+                         text_color=TEXT_SECONDARY).pack(anchor="w", pady=(0, 4))
+
+            flow_frame = ctk.CTkFrame(body, fg_color=resolve_color(BG_DARK),
+                                       corner_radius=6)
+            flow_frame.pack(fill="x")
+
+            hrow = ctk.CTkFrame(flow_frame, fg_color=resolve_color(BG_MEDIUM))
+            hrow.pack(fill="x", padx=2, pady=(2, 0))
+            for txt, w in [("Source IP", 155), ("Destination IP", 155),
+                            ("Retransmits / Total", 155), ("Loss Rate", 110), ("Priority", 120)]:
+                ctk.CTkLabel(hrow, text=txt, width=w,
+                              font=(FONT_FAMILY, FONT_SIZE_SMALL, "bold"),
+                              text_color=TEXT_SECONDARY, anchor="w").pack(side="left", padx=8, pady=4)
+
+            for idx2, (src, dst, retx, total_flow, pct) in enumerate(a.tcp_retx_by_flow[:8]):
+                row_bg = resolve_color(BG_DARK) if idx2 % 2 == 0 else resolve_color(BG_MEDIUM)
+                loss_color = STATUS_ERROR if pct >= 10 else (STATUS_WARN if pct >= 3 else TEXT_PRIMARY)
+                priority   = "🔴 Inspect first" if pct >= 10 else ("🟡 Investigate" if pct >= 3 else "🟢 Monitor")
+
+                drow = ctk.CTkFrame(flow_frame, fg_color=row_bg)
+                drow.pack(fill="x", padx=2, pady=1)
+
+                ctk.CTkLabel(drow, text=src, width=155,
+                              font=(FONT_FAMILY_MONO, FONT_SIZE_SMALL),
+                              text_color=TEXT_PRIMARY, anchor="w").pack(side="left", padx=8, pady=3)
+                ctk.CTkLabel(drow, text=dst, width=155,
+                              font=(FONT_FAMILY_MONO, FONT_SIZE_SMALL),
+                              text_color=TEXT_MUTED, anchor="w").pack(side="left", padx=8)
+                ctk.CTkLabel(drow, text=f"{retx} / {total_flow}", width=155,
+                              font=(FONT_FAMILY_MONO, FONT_SIZE_SMALL),
+                              text_color=loss_color, anchor="w").pack(side="left", padx=8)
+                ctk.CTkLabel(drow, text=f"{pct:.1f}%", width=110,
+                              font=(FONT_FAMILY_MONO, FONT_SIZE_SMALL, "bold"),
+                              text_color=loss_color, anchor="w").pack(side="left", padx=8)
+                ctk.CTkLabel(drow, text=priority, width=120,
+                              font=(FONT_FAMILY, FONT_SIZE_SMALL),
+                              text_color=TEXT_SECONDARY, anchor="w").pack(side="left", padx=8)
+
+    def _build_arp_conflict_detail(self, parent, a):
+        """ARP conflict table injected into FindingCard details."""
+        if not a.arp_conflicts:
+            return
+        ctk.CTkLabel(parent, text="Detected IP/MAC Conflicts:",
+                     font=(FONT_FAMILY, FONT_SIZE_SMALL, "bold"),
+                     text_color=TEXT_SECONDARY).pack(anchor="w", pady=(0, 4))
+        tbl = ctk.CTkFrame(parent, fg_color=resolve_color(BG_DARK), corner_radius=6)
+        tbl.pack(fill="x", pady=(0, 8))
+        hrow = ctk.CTkFrame(tbl, fg_color=resolve_color(BG_MEDIUM))
+        hrow.pack(fill="x", padx=2, pady=(2, 0))
+        for txt, w in [("IP Address", 160), ("Observed MACs", 360), ("Count", 100)]:
+            ctk.CTkLabel(hrow, text=txt, width=w,
+                         font=(FONT_FAMILY, FONT_SIZE_SMALL, "bold"),
+                         text_color=TEXT_SECONDARY, anchor="w").pack(side="left", padx=8, pady=4)
+        for i, conflict in enumerate(a.arp_conflicts[:10]):
+            row_bg = resolve_color(BG_DARK) if i % 2 == 0 else resolve_color(BG_MEDIUM)
+            drow = ctk.CTkFrame(tbl, fg_color=row_bg)
+            drow.pack(fill="x", padx=2, pady=1)
+            macs = ", ".join(conflict.get("macs", []))
+            ctk.CTkLabel(drow, text=conflict.get("ip", "?"), width=160,
+                         font=(FONT_FAMILY_MONO, FONT_SIZE_SMALL),
+                         text_color=STATUS_ERROR, anchor="w").pack(side="left", padx=8, pady=3)
+            ctk.CTkLabel(drow, text=macs, width=360,
+                         font=(FONT_FAMILY_MONO, FONT_SIZE_SMALL),
+                         text_color=TEXT_PRIMARY, anchor="w").pack(side="left", padx=8)
+            ctk.CTkLabel(drow, text=str(conflict.get("count", "?")), width=100,
+                         font=(FONT_FAMILY_MONO, FONT_SIZE_SMALL),
+                         text_color=STATUS_WARN, anchor="w").pack(side="left", padx=8)
+
+    def _build_arp_chatter_detail(self, parent, a):
+        """Top ARP request sources injected into FindingCard details."""
+        if not a.arp_requests_by_src:
+            return
+        ctk.CTkLabel(parent, text="Top ARP Request Sources:",
+                     font=(FONT_FAMILY, FONT_SIZE_SMALL, "bold"),
+                     text_color=TEXT_SECONDARY).pack(anchor="w", pady=(0, 4))
+        tbl = ctk.CTkFrame(parent, fg_color=resolve_color(BG_DARK), corner_radius=6)
+        tbl.pack(fill="x", pady=(0, 8))
+        hrow = ctk.CTkFrame(tbl, fg_color=resolve_color(BG_MEDIUM))
+        hrow.pack(fill="x", padx=2, pady=(2, 0))
+        for txt, w in [("Source IP", 180), ("ARP Requests", 140), ("% of Total", 120), ("Note", 240)]:
+            ctk.CTkLabel(hrow, text=txt, width=w,
+                         font=(FONT_FAMILY, FONT_SIZE_SMALL, "bold"),
+                         text_color=TEXT_SECONDARY, anchor="w").pack(side="left", padx=8, pady=4)
+        total_arp = sum(c for _, c in a.arp_requests_by_src)
+        for i, (ip, cnt) in enumerate(a.arp_requests_by_src[:8]):
+            row_bg = resolve_color(BG_DARK) if i % 2 == 0 else resolve_color(BG_MEDIUM)
+            drow = ctk.CTkFrame(tbl, fg_color=row_bg)
+            drow.pack(fill="x", padx=2, pady=1)
+            pct = cnt / total_arp * 100 if total_arp else 0
+            note = "Unusually chatty" if pct > 40 else ""
+            ctk.CTkLabel(drow, text=ip, width=180,
+                         font=(FONT_FAMILY_MONO, FONT_SIZE_SMALL),
+                         text_color=TEXT_PRIMARY, anchor="w").pack(side="left", padx=8, pady=3)
+            ctk.CTkLabel(drow, text=str(cnt), width=140,
+                         font=(FONT_FAMILY_MONO, FONT_SIZE_SMALL),
+                         text_color=STATUS_WARN if pct > 40 else TEXT_PRIMARY,
+                         anchor="w").pack(side="left", padx=8)
+            ctk.CTkLabel(drow, text=f"{pct:.0f}%", width=120,
+                         font=(FONT_FAMILY_MONO, FONT_SIZE_SMALL),
+                         text_color=TEXT_PRIMARY, anchor="w").pack(side="left", padx=8)
+            ctk.CTkLabel(drow, text=note, width=240,
+                         font=(FONT_FAMILY, FONT_SIZE_TINY),
+                         text_color=TEXT_MUTED, anchor="w").pack(side="left", padx=8)
+
+    def _build_talker_detail(self, parent, a):
+        """Top talker table injected into FindingCard details."""
+        if not a.top_talkers_by_bytes:
+            return
+        ctk.CTkLabel(parent, text="Top Bandwidth Consumers:",
+                     font=(FONT_FAMILY, FONT_SIZE_SMALL, "bold"),
+                     text_color=TEXT_SECONDARY).pack(anchor="w", pady=(0, 4))
+        tbl = ctk.CTkFrame(parent, fg_color=resolve_color(BG_DARK), corner_radius=6)
+        tbl.pack(fill="x", pady=(0, 8))
+        hrow = ctk.CTkFrame(tbl, fg_color=resolve_color(BG_MEDIUM))
+        hrow.pack(fill="x", padx=2, pady=(2, 0))
+        for txt, w in [("IP Address", 180), ("Bytes", 110), ("% Traffic", 120), ("Status", 200)]:
+            ctk.CTkLabel(hrow, text=txt, width=w,
+                         font=(FONT_FAMILY, FONT_SIZE_SMALL, "bold"),
+                         text_color=TEXT_SECONDARY, anchor="w").pack(side="left", padx=8, pady=4)
+        total_bytes = sum(b for _, b in a.top_talkers_by_bytes)
+        for i, (ip, byt) in enumerate(a.top_talkers_by_bytes[:8]):
+            row_bg = resolve_color(BG_DARK) if i % 2 == 0 else resolve_color(BG_MEDIUM)
+            drow = ctk.CTkFrame(tbl, fg_color=row_bg)
+            drow.pack(fill="x", padx=2, pady=1)
+            pct = byt / total_bytes * 100 if total_bytes else 0
+            mb = byt / 1_048_576
+            status = "Dominating link" if pct > 50 else "High share" if pct > 25 else "Normal"
+            ctk.CTkLabel(drow, text=ip, width=180,
+                         font=(FONT_FAMILY_MONO, FONT_SIZE_SMALL),
+                         text_color=TEXT_PRIMARY, anchor="w").pack(side="left", padx=8, pady=3)
+            ctk.CTkLabel(drow, text=f"{mb:.1f} MB", width=110,
+                         font=(FONT_FAMILY_MONO, FONT_SIZE_SMALL),
+                         text_color=TEXT_PRIMARY, anchor="w").pack(side="left", padx=8)
+            ctk.CTkLabel(drow, text=f"{pct:.1f}%", width=120,
+                         font=(FONT_FAMILY_MONO, FONT_SIZE_SMALL),
+                         text_color=STATUS_ERROR if pct > 50 else (STATUS_WARN if pct > 25 else TEXT_PRIMARY),
+                         anchor="w").pack(side="left", padx=8)
+            ctk.CTkLabel(drow, text=status, width=200,
+                         font=(FONT_FAMILY, FONT_SIZE_SMALL),
+                         text_color=TEXT_SECONDARY, anchor="w").pack(side="left", padx=8)
+
+    def _build_protocol_detail(self, parent, a):
+        """Protocol distribution table injected into FindingCard details."""
+        if not a.protocol_breakdown:
+            return
+        ctk.CTkLabel(parent, text="Full Protocol Distribution:",
+                     font=(FONT_FAMILY, FONT_SIZE_SMALL, "bold"),
+                     text_color=TEXT_SECONDARY).pack(anchor="w", pady=(0, 4))
+        tbl = ctk.CTkFrame(parent, fg_color=resolve_color(BG_DARK), corner_radius=6)
+        tbl.pack(fill="x", pady=(0, 8))
+        hrow = ctk.CTkFrame(tbl, fg_color=resolve_color(BG_MEDIUM))
+        hrow.pack(fill="x", padx=2, pady=(2, 0))
+        for txt, w in [("Protocol", 180), ("Packets", 100), ("% Total", 100), ("Type", 280)]:
+            ctk.CTkLabel(hrow, text=txt, width=w,
+                         font=(FONT_FAMILY, FONT_SIZE_SMALL, "bold"),
+                         text_color=TEXT_SECONDARY, anchor="w").pack(side="left", padx=8, pady=4)
+        total = sum(a.protocol_breakdown.values())
+        INDUSTRIAL = {"EtherNet/IP", "CIP", "Modbus", "PROFINET", "EtherCAT", "ARP", "ICMP"}
+        for i, (proto, cnt) in enumerate(sorted(a.protocol_breakdown.items(), key=lambda x: -x[1])[:12]):
+            row_bg = resolve_color(BG_DARK) if i % 2 == 0 else resolve_color(BG_MEDIUM)
+            drow = ctk.CTkFrame(tbl, fg_color=row_bg)
+            drow.pack(fill="x", padx=2, pady=1)
+            pct = cnt / total * 100 if total else 0
+            is_ind = any(p in proto for p in INDUSTRIAL)
+            kind = "Industrial" if is_ind else "IT / Mgmt" if any(p in proto for p in ("HTTP", "DNS", "SNMP", "DHCP")) else "Other"
+            ctk.CTkLabel(drow, text=proto, width=180,
+                         font=(FONT_FAMILY_MONO, FONT_SIZE_SMALL),
+                         text_color=TEXT_PRIMARY, anchor="w").pack(side="left", padx=8, pady=3)
+            ctk.CTkLabel(drow, text=f"{cnt:,}", width=100,
+                         font=(FONT_FAMILY_MONO, FONT_SIZE_SMALL),
+                         text_color=TEXT_PRIMARY, anchor="w").pack(side="left", padx=8)
+            ctk.CTkLabel(drow, text=f"{pct:.1f}%", width=100,
+                         font=(FONT_FAMILY_MONO, FONT_SIZE_SMALL),
+                         text_color=TEXT_PRIMARY, anchor="w").pack(side="left", padx=8)
+            ctk.CTkLabel(drow, text=kind, width=280,
+                         font=(FONT_FAMILY, FONT_SIZE_TINY),
+                         text_color=TEXT_MUTED, anchor="w").pack(side="left", padx=8)
+
+        # ── Protocol Donut Chart ──────────────────────────────────────────────────
+
+    def _build_stp_detail(self, parent, a):
+        """STP information injected into FindingCard details."""
+        rows = [
+            ("STP Frames Seen", str(getattr(a, "stp_count", "—"))),
+            ("Topology Changes", str(getattr(a, "stp_topology_changes", "—"))),
+            ("Capture Duration", f"{a.duration_seconds:.0f}s"),
+        ]
+        ctk.CTkLabel(parent, text="Spanning Tree Protocol Details:",
+                     font=(FONT_FAMILY, FONT_SIZE_SMALL, "bold"),
+                     text_color=TEXT_SECONDARY).pack(anchor="w", pady=(0, 4))
+        tbl = ctk.CTkFrame(parent, fg_color=resolve_color(BG_DARK), corner_radius=6)
+        tbl.pack(fill="x", pady=(0, 8))
+        for i, (label, value) in enumerate(rows):
+            row_bg = resolve_color(BG_DARK) if i % 2 == 0 else resolve_color(BG_MEDIUM)
+            drow = ctk.CTkFrame(tbl, fg_color=row_bg)
+            drow.pack(fill="x", padx=2, pady=1)
+            ctk.CTkLabel(drow, text=label, width=200,
+                         font=(FONT_FAMILY, FONT_SIZE_SMALL),
+                         text_color=TEXT_SECONDARY, anchor="w").pack(side="left", padx=8, pady=3)
+            ctk.CTkLabel(drow, text=value,
+                         font=(FONT_FAMILY_MONO, FONT_SIZE_SMALL, "bold"),
+                         text_color=STATUS_WARN if i == 1 and int(value or 0) > 2 else TEXT_PRIMARY,
+                         anchor="w").pack(side="left", padx=8)
+
+        note = ("Each topology change forces all devices to relearn the network map. "
+                "Frequent changes cause brief connectivity interruptions. "
+                "Identify the port sending topology change BPDUs using your switch's management interface.")
+        ctk.CTkLabel(parent, text=note,
+                     font=(FONT_FAMILY, FONT_SIZE_TINY),
+                     text_color=TEXT_MUTED, wraplength=700, anchor="w",
+                     justify="left").pack(fill="x", pady=(0, 4))
+
+    def _build_multicast_detail(self, parent, a):
+        """Multicast traffic info injected into FindingCard details."""
+        total = a.total_packets
+        mc_count = getattr(a, "multicast_count", 0)
+        mc_pct = getattr(a, "multicast_pct", 0.0)
+        rows = [
+            ("Total Packets",     f"{total:,}"),
+            ("Multicast Packets", f"{mc_count:,}"),
+            ("Multicast Share",   f"{mc_pct:.1f}%"),
+            ("Packets/Second",    f"{a.packets_per_second:.1f}"),
+        ]
+        ctk.CTkLabel(parent, text="Multicast Traffic Breakdown:",
+                     font=(FONT_FAMILY, FONT_SIZE_SMALL, "bold"),
+                     text_color=TEXT_SECONDARY).pack(anchor="w", pady=(0, 4))
+        tbl = ctk.CTkFrame(parent, fg_color=resolve_color(BG_DARK), corner_radius=6)
+        tbl.pack(fill="x", pady=(0, 8))
+        for i, (label, value) in enumerate(rows):
+            row_bg = resolve_color(BG_DARK) if i % 2 == 0 else resolve_color(BG_MEDIUM)
+            drow = ctk.CTkFrame(tbl, fg_color=row_bg)
+            drow.pack(fill="x", padx=2, pady=1)
+            ctk.CTkLabel(drow, text=label, width=200,
+                         font=(FONT_FAMILY, FONT_SIZE_SMALL),
+                         text_color=TEXT_SECONDARY, anchor="w").pack(side="left", padx=8, pady=3)
+            ctk.CTkLabel(drow, text=value,
+                         font=(FONT_FAMILY_MONO, FONT_SIZE_SMALL, "bold"),
+                         text_color=TEXT_PRIMARY, anchor="w").pack(side="left", padx=8)
+
+        note = ("High multicast traffic commonly comes from EtherNet/IP implicit messaging, "
+                "media streaming, or router advertisements. Use your switch's IGMP snooping "
+                "feature to contain multicast traffic to only the ports that need it.")
+        ctk.CTkLabel(parent, text=note,
+                     font=(FONT_FAMILY, FONT_SIZE_TINY),
+                     text_color=TEXT_MUTED, wraplength=700, anchor="w",
+                     justify="left").pack(fill="x", pady=(0, 4))
+
+    def _build_grat_arp_detail(self, parent, a):
+        """Gratuitous ARP detail injected into FindingCard."""
+        grat = getattr(a, "gratuitous_arps", 0)
+        total_arp = a.arp_requests + a.arp_replies
+        rows = [
+            ("Total ARP Packets",   f"{total_arp:,}"),
+            ("Gratuitous ARPs",     f"{grat:,}"),
+            ("ARP Requests",        f"{a.arp_requests:,}"),
+            ("ARP Replies",         f"{a.arp_replies:,}"),
+        ]
+        ctk.CTkLabel(parent, text="ARP Activity Summary:",
+                     font=(FONT_FAMILY, FONT_SIZE_SMALL, "bold"),
+                     text_color=TEXT_SECONDARY).pack(anchor="w", pady=(0, 4))
+        tbl = ctk.CTkFrame(parent, fg_color=resolve_color(BG_DARK), corner_radius=6)
+        tbl.pack(fill="x", pady=(0, 8))
+        for i, (label, value) in enumerate(rows):
+            row_bg = resolve_color(BG_DARK) if i % 2 == 0 else resolve_color(BG_MEDIUM)
+            drow = ctk.CTkFrame(tbl, fg_color=row_bg)
+            drow.pack(fill="x", padx=2, pady=1)
+            ctk.CTkLabel(drow, text=label, width=200,
+                         font=(FONT_FAMILY, FONT_SIZE_SMALL),
+                         text_color=TEXT_SECONDARY, anchor="w").pack(side="left", padx=8, pady=3)
+            ctk.CTkLabel(drow, text=value,
+                         font=(FONT_FAMILY_MONO, FONT_SIZE_SMALL, "bold"),
+                         text_color=TEXT_PRIMARY, anchor="w").pack(side="left", padx=8)
+
+    def _build_summary_detail(self, parent, a):
+        """Full capture statistics injected into health/summary FindingCard."""
+        rows = [
+            ("Total Packets",          f"{a.total_packets:,}"),
+            ("Total Bytes",            _format_bytes(a.total_bytes)),
+            ("Capture Duration",       f"{a.duration_seconds:.1f}s"),
+            ("Packets / Second",       f"{a.packets_per_second:.1f}"),
+            ("Unique Hosts",           str(a.unique_hosts)),
+            ("Broadcast %",            f"{a.broadcast_pct:.1f}%"),
+            ("Multicast %",            f"{getattr(a, 'multicast_pct', 0.0):.1f}%"),
+            ("TCP Retransmissions",    f"{a.tcp_retransmission_pct:.1f}%"),
+            ("ARP Requests",           f"{a.arp_requests:,}"),
+            ("ARP Replies",            f"{a.arp_replies:,}"),
+            ("Health Score",           f"{a.health_score}/100"),
+        ]
+        ctk.CTkLabel(parent, text="Full Capture Statistics:",
+                     font=(FONT_FAMILY, FONT_SIZE_SMALL, "bold"),
+                     text_color=TEXT_SECONDARY).pack(anchor="w", pady=(0, 4))
+        tbl = ctk.CTkFrame(parent, fg_color=resolve_color(BG_DARK), corner_radius=6)
+        tbl.pack(fill="x", pady=(0, 8))
+        for i, (label, value) in enumerate(rows):
+            row_bg = resolve_color(BG_DARK) if i % 2 == 0 else resolve_color(BG_MEDIUM)
+            drow = ctk.CTkFrame(tbl, fg_color=row_bg)
+            drow.pack(fill="x", padx=2, pady=1)
+            ctk.CTkLabel(drow, text=label, width=200,
+                         font=(FONT_FAMILY, FONT_SIZE_SMALL),
+                         text_color=TEXT_SECONDARY, anchor="w").pack(side="left", padx=8, pady=3)
+            ctk.CTkLabel(drow, text=value,
+                         font=(FONT_FAMILY_MONO, FONT_SIZE_SMALL, "bold"),
+                         text_color=TEXT_PRIMARY, anchor="w").pack(side="left", padx=8)
 
     def _draw_protocol_chart(self, parent, protocol_data: Dict[str, int]):
         """Draw a donut chart showing protocol distribution."""
