@@ -754,7 +754,7 @@ def generate_capture_report(
         score_label = "Critical"
 
     score_text = (
-        f'<font name="Helvetica-Bold" size="22" color="{score_color.hexval()}">'
+        f'<font name="Helvetica-Bold" size="22" color="{score_color.hexval().replace("0x", "#").upper()}">'
         f'{score}/100</font>  '
         f'<font name="Helvetica" size="11" color="{TEXT_SECONDARY_HEX}">'
         f'Network Health: {score_label}</font>'
@@ -877,7 +877,7 @@ def generate_capture_report(
 
             # Severity badge + title
             title_text = (
-                f'<font name="Helvetica-Bold" size="8" color="{sev_color.hexval()}">'
+                f'<font name="Helvetica-Bold" size="8" color="{sev_color.hexval().replace("0x", "#").upper()}">'
                 f'[{sev_label}]</font>  '
                 f'<font name="Helvetica-Bold" size="9" color="{TEXT_DARK_HEX}">'
                 f'{finding.title}</font>'
@@ -1323,28 +1323,28 @@ def generate_monitor_report(
         # Health score banner
         score = report.health_score
         if score >= 80:
-            banner_color = HexColor("#166534")
-            banner_bg    = HexColor("#DCFCE7")
-            health_label = "✅  Healthy"
+            banner_color_hex = "#166534"
+            banner_bg_hex    = "#DCFCE7"
+            health_label_txt = "Healthy"
         elif score >= 60:
-            banner_color = HexColor("#92400E")
-            banner_bg    = HexColor("#FEF3C7")
-            health_label = "⚠  Degraded"
+            banner_color_hex = "#92400E"
+            banner_bg_hex    = "#FEF3C7"
+            health_label_txt = "Degraded"
         else:
-            banner_color = HexColor("#991B1B")
-            banner_bg    = HexColor("#FEE2E2")
-            health_label = "🔴  Critical"
+            banner_color_hex = "#991B1B"
+            banner_bg_hex    = "#FEE2E2"
+            health_label_txt = "Critical"
 
         avail_w = page_w - 1.0 * inch
         banner_t = Table(
             [[Paragraph(
-                f"<font color='#{banner_color.hexval()[1:]}'>"
-                f"<b>Health Score: {score}/100 — {health_label}</b></font>",
+                f"<font color='{banner_color_hex}'>"
+                f"<b>Health Score: {score}/100 — {health_label_txt}</b></font>",
                 sd["body"])]],
             colWidths=[avail_w])
         banner_t.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, -1), banner_bg),
-            ("BOX", (0, 0), (-1, -1), 0.5, banner_color),
+            ("BACKGROUND", (0, 0), (-1, -1), HexColor(banner_bg_hex)),
+            ("BOX", (0, 0), (-1, -1), 0.5, HexColor(banner_color_hex)),
             ("TOPPADDING", (0, 0), (-1, -1), 6),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
             ("LEFTPADDING", (0, 0), (-1, -1), 10),
@@ -1870,52 +1870,43 @@ def generate_device_diagnostic_report(
     info_lines = [l for l in info_lines if l]
     _build_report_header(story, sd, "Device Diagnostic Report", info_lines, page_w, inch)
 
-    # ── Health Score ──
+    # ── Health Score banner (matches monitor/link-quality style) ──
+    avail_w = page_w - 1.0 * inch
     if report:
         score = report.health_score
         if score >= 80:
-            score_color = "#22C55E"
-            score_label = "HEALTHY"
+            banner_color_hex = "#166534"
+            banner_bg_hex    = "#DCFCE7"
+            health_label_txt = "Healthy"
         elif score >= 50:
-            score_color = "#F59E0B"
-            score_label = "WARNING"
+            banner_color_hex = "#92400E"
+            banner_bg_hex    = "#FEF3C7"
+            health_label_txt = "Degraded"
         else:
-            score_color = "#EF4444"
-            score_label = "CRITICAL"
+            banner_color_hex = "#991B1B"
+            banner_bg_hex    = "#FEE2E2"
+            health_label_txt = "Critical"
 
-        story.append(Paragraph("Health Assessment", sd["heading"]))
-        health_data = [
-            [Paragraph("<b>Health Score</b>", sd["header_cell"]),
-             Paragraph("<b>Status</b>", sd["header_cell"]),
-             Paragraph("<b>Problems</b>", sd["header_cell"]),
-             Paragraph("<b>Warnings</b>", sd["header_cell"]),
-             Paragraph("<b>OK</b>", sd["header_cell"])],
-            [Paragraph(f"<b>{score}/100</b>", sd["cell_bold"]),
-             Paragraph(f"<b>{score_label}</b>", sd["cell_bold"]),
-             Paragraph(str(report.critical_count), sd["cell"]),
-             Paragraph(str(report.warning_count), sd["cell"]),
-             Paragraph(str(report.ok_count), sd["cell"])],
-        ]
-        avail_w = page_w - 1.0 * inch
-        cw = avail_w / 5
-        t = Table(health_data, colWidths=[cw] * 5)
-        t.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), header_bg),
-            ("TEXTCOLOR", (0, 0), (-1, 0), white),
-            ("GRID", (0, 0), (-1, -1), 0.5, border),
-            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        banner_t = Table(
+            [[Paragraph(
+                f"<font color='{banner_color_hex}'>"
+                f"<b>Health Score: {score}/100 \u2014 {health_label_txt}</b></font>",
+                sd["body"])]],
+            colWidths=[avail_w])
+        banner_t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), HexColor(banner_bg_hex)),
+            ("BOX", (0, 0), (-1, -1), 0.5, HexColor(banner_color_hex)),
             ("TOPPADDING", (0, 0), (-1, -1), 6),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ("LEFTPADDING", (0, 0), (-1, -1), 10),
         ]))
-        story.append(t)
-        story.append(Spacer(1, 12))
+        story.append(banner_t)
+        story.append(Spacer(1, 4))
 
         # Overall summary
-        if report.overall_summary:
-            story.append(Paragraph("Summary", sd["heading"]))
+        if hasattr(report, "overall_summary") and report.overall_summary:
             story.append(Paragraph(report.overall_summary, sd["body"]))
-            story.append(Spacer(1, 12))
+        story.append(Spacer(1, 8))
 
     # ── Device Details ──
     if eip_identity or device:
@@ -1963,48 +1954,91 @@ def generate_device_diagnostic_report(
         story.append(Paragraph("Diagnostic Findings", sd["heading"]))
 
         severity_order = {"critical": 0, "warning": 1, "ok": 2, "info": 3}
-        sorted_findings = sorted(report.findings,
-                                  key=lambda f: severity_order.get(f.severity.value, 4))
 
-        severity_colors = {
-            "critical": HexColor("#FEE2E2"),
-            "warning": HexColor("#FEF3C7"),
-            "ok": HexColor("#DCFCE7"),
-            "info": HexColor("#DBEAFE"),
-        }
-        severity_labels = {
-            "critical": "🔴 PROBLEM",
-            "warning": "⚠️ WARNING",
-            "ok": "✅ OK",
-            "info": "ℹ️ INFO",
-        }
+        def _sev_str(f):
+            sv = getattr(f, "severity", None)
+            if sv is None:
+                return "info"
+            return sv.value.lower() if hasattr(sv, "value") else str(sv).lower()
+
+        sorted_findings = sorted(report.findings,
+                                 key=lambda f: severity_order.get(_sev_str(f), 4))
 
         for finding in sorted_findings:
-            sev = finding.severity.value
-            bg_color = severity_colors.get(sev, row_alt)
-            label = severity_labels.get(sev, sev.upper())
+            sev = _sev_str(finding)
+            title_txt   = getattr(finding, "title", "")
+            raw_txt     = getattr(finding, "raw_value", "")
+            summary_txt = getattr(finding, "summary", "")
+            expl_txt    = getattr(finding, "explanation", "")
+            rec_txt     = getattr(finding, "recommendation", "")
 
-            finding_data = [
-                [Paragraph(f"<b>{label}: {finding.title}</b>", sd["cell_bold"])],
-                [Paragraph(finding.summary, sd["cell"])],
-            ]
-            if finding.explanation:
-                finding_data.append([Paragraph(f"<i>{finding.explanation}</i>", sd["cell"])])
-            if finding.recommendation:
-                finding_data.append([Paragraph(f"<b>Action:</b> {finding.recommendation}", sd["cell"])])
-            if finding.raw_value:
-                finding_data.append([Paragraph(f"<font size=7 color='#666666'>Raw: {finding.raw_value}</font>", sd["cell"])])
+            sev_icon  = {"critical": "🔴", "warning": "🟡", "ok": "🟢", "info": "🔵"}.get(sev, "ℹ️")
+            sev_color = {
+                "critical": HexColor("#EF4444"),
+                "warning":  HexColor("#F59E0B"),
+                "ok":       HexColor("#22C55E"),
+                "info":     HexColor("#3B82F6"),
+            }.get(sev, HexColor("#6B7280"))
+            sev_bg = {
+                "critical": HexColor("#FEE2E2"),
+                "warning":  HexColor("#FEF3C7"),
+                "ok":       HexColor("#DCFCE7"),
+                "info":     HexColor("#EFF6FF"),
+            }.get(sev, HexColor("#F9FAFB"))
 
-            t = Table(finding_data, colWidths=[avail_w])
-            styles = [
-                ("BACKGROUND", (0, 0), (0, 0), bg_color),
-                ("GRID", (0, 0), (-1, -1), 0.5, border),
-                ("TOPPADDING", (0, 0), (-1, -1), 4),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            # Title bar
+            title_row = Table(
+                [[Paragraph(f"{sev_icon} <b>{title_txt}</b>", sd["cell_bold"])]],
+                colWidths=[avail_w])
+            title_row.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, -1), sev_bg),
+                ("LINEBELOW", (0, 0), (-1, -1), 1.5, sev_color),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
                 ("LEFTPADDING", (0, 0), (-1, -1), 8),
-            ]
-            t.setStyle(TableStyle(styles))
-            story.append(KeepTogether([t, Spacer(1, 6)]))
+            ]))
+
+            # Detail rows — map old fields to new 4-row layout
+            detail_rows = []
+            if raw_txt:
+                detail_rows.append([
+                    Paragraph("<b>Observed:</b>", sd["cell"]),
+                    Paragraph(raw_txt, sd["cell_bold"]),
+                ])
+            if summary_txt:
+                detail_rows.append([
+                    Paragraph("<b>What Was Found:</b>", sd["cell"]),
+                    Paragraph(summary_txt, sd["cell"]),
+                ])
+            if expl_txt:
+                detail_rows.append([
+                    Paragraph("<b>What This Means:</b>", sd["cell"]),
+                    Paragraph(expl_txt, sd["cell"]),
+                ])
+            if rec_txt:
+                detail_rows.append([
+                    Paragraph("<b>What To Do:</b>", sd["cell_bold"]),
+                    Paragraph(rec_txt, sd["cell"]),
+                ])
+
+            detail_block_parts = [title_row]
+            if detail_rows:
+                lw = avail_w * 0.22
+                rw = avail_w - lw
+                det_t = Table(detail_rows, colWidths=[lw, rw])
+                det_t.setStyle(TableStyle([
+                    ("BOX", (0, 0), (-1, -1), 0.5, HexColor(BORDER_HEX)),
+                    ("LINEBELOW", (0, 0), (-1, -2), 0.25, HexColor(BORDER_HEX)),
+                    ("BACKGROUND", (0, 0), (0, -1), HexColor(HEADER_BG_HEX)),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ]))
+                detail_block_parts.append(det_t)
+
+            detail_block_parts.append(Spacer(1, 8))
+            story.append(KeepTogether(detail_block_parts))
 
     # Footer
     story.append(Spacer(1, 20))
@@ -2437,7 +2471,7 @@ def generate_link_quality_report(
         HexColor("#F59E0B") if score >= 60 else HexColor("#EF4444"))
     score_label = "Good" if score >= 80 else ("Fair" if score >= 60 else "Poor")
     story.append(Paragraph(
-        f'<font name="Helvetica-Bold" size="20" color="{score_color.hexval()}">'
+        f'<font name="Helvetica-Bold" size="20" color="{score_color.hexval().replace("0x", "#").upper()}">'
         f'{score}/100</font>  '
         f'<font name="Helvetica" size="10" color="{TEXT_SECONDARY_HEX}">'
         f'Link Health: {score_label}</font>',
@@ -2479,7 +2513,7 @@ def generate_link_quality_report(
                 Paragraph(avg_s, style_cell),
                 Paragraph(jit_s, style_cell),
                 Paragraph(loss_s, style_cell),
-                Paragraph(f'<font color="{s_color.hexval()}">{status}</font>', style_cell_b),
+                Paragraph(f'<font color="{s_color.hexval().replace("0x", "#").upper()}">{status}</font>', style_cell_b),
             ])
 
         rcw = [avail_w * 0.18, avail_w * 0.22, avail_w * 0.20, avail_w * 0.18, avail_w * 0.22]
@@ -2537,7 +2571,7 @@ def generate_link_quality_report(
             sev_label = getattr(f, "severity", "ok").upper()
             block = [
                 Paragraph(
-                    f'<font name="Helvetica-Bold" size="8" color="{sev_c.hexval()}">[{sev_label}]</font>  '
+                    f'<font name="Helvetica-Bold" size="8" color="{sev_c.hexval().replace("0x", "#").upper()}">[{sev_label}]</font>  '
                     f'<font name="Helvetica-Bold" size="9">{f.title}</font>',
                     ParagraphStyle("LQFindT", parent=style_body, spaceAfter=2)),
                 Paragraph(f.detail, ParagraphStyle("LQFindD", parent=style_small, leftIndent=8)),
